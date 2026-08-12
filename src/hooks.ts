@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { socketPath, stateDir } from './config';
 import { isRecord } from './report';
 
@@ -14,8 +14,7 @@ export interface HookEvent {
 // The user's own settings are untouched; these hooks only exist in sessions
 // atc spawns, and identify themselves via ATC_SESSION_ID in the env.
 export function writeHookSettings(): string {
-  const reporter = join(import.meta.dir, 'hook-report.ts');
-  const cmd = `"${process.execPath}" "${reporter}"`;
+  const cmd = buildCLICommand('hook-report');
   const entry = [{ hooks: [{ type: 'command', command: cmd, timeout: 5 }] }];
 
   const settings = {
@@ -50,7 +49,7 @@ export function writeHookSettings(): string {
 
   const statusline = {
     type: 'command',
-    command: `"${process.execPath}" "${join(import.meta.dir, 'statusline.ts')}"`,
+    command: buildCLICommand('statusline'),
     padding,
   };
 
@@ -59,6 +58,18 @@ export function writeHookSettings(): string {
   writeFileSync(file, JSON.stringify({ ...settings, statusLine: statusline }, null, 2));
 
   return file;
+}
+
+// Wrangled sessions invoke atc subcommands: under bun the CLI entry path is
+// part of the command; a compiled binary is itself the entry.
+function buildCLICommand(subcommand: string): string {
+  const exec = process.execPath;
+
+  if (basename(exec) === 'bun' || basename(exec) === 'bun.exe') {
+    return `"${exec}" "${join(import.meta.dir, 'cli.ts')}" ${subcommand}`;
+  }
+
+  return `"${exec}" ${subcommand}`;
 }
 
 // Debug trail for state-machine issues: one JSON line per received hook event.

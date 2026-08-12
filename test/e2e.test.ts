@@ -41,9 +41,9 @@ function setupTest(): TestContext {
     fakeClaude,
     `#!/usr/bin/env bash
 echo "FAKE_CLAUDE_UP args: $@"
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'hook-report.ts')}"
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
 sleep 0.3
-printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'hook-report.ts')}"
+printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
 sleep 30
 `,
     { mode: 0o755 },
@@ -61,7 +61,7 @@ sleep 30
     home,
 
     boot() {
-      pty = spawn(process.execPath, [join(repo, 'src', 'index.ts')], {
+      pty = spawn(process.execPath, [join(repo, 'src', 'cli.ts')], {
         name: 'xterm-256color',
         cols: 110,
         rows: 30,
@@ -318,7 +318,7 @@ test('it chains the user statusline and appends the fleet segment', async () => 
     JSON.stringify({ needs_you: 2, running: 1, done: 0, exited: 0, urgent: 'auth-bug' }),
   );
 
-  const proc = Bun.spawn([process.execPath, join(repo, 'src', 'statusline.ts')], {
+  const proc = Bun.spawn([process.execPath, join(repo, 'src', 'cli.ts'), 'statusline'], {
     stdin: new TextEncoder().encode(JSON.stringify({ session_id: 'sl-1' })),
     env: collectEnv({ HOME: ctx.home, PATH: '/usr/sbin:/usr/bin:/bin' }),
     stdout: 'pipe',
