@@ -105,7 +105,7 @@ sleep 30
   return {
     home,
     sendRPC(msg) {
-      proc.stdin.write(`${JSON.stringify(msg)}\n`);
+      void proc.stdin.write(`${JSON.stringify(msg)}\n`);
       void proc.stdin.flush();
     },
     async waitForResponse(id: number) {
@@ -143,7 +143,7 @@ function getText(result: Readonly<Record<string, unknown>>): string {
     throw new TypeError('result has no content array');
   }
 
-  const [first]: unknown[] = content;
+  const first: unknown = content.at(0);
 
   if (!isRecord(first) || typeof first['text'] !== 'string') {
     throw new TypeError('result content has no text');
