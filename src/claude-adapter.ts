@@ -18,6 +18,9 @@ import { isRecord } from './report';
  * resume semantics, transcript name-pulling, and statusline chaining.
  */
 export class ClaudeAdapter implements AgentAdapter {
+  // Claude's hooks are authoritative; no screen heuristics needed.
+  readonly screenDetector = null;
+
   private readonly config: Config;
 
   private readonly settingsFile: string;

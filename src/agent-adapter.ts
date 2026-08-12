@@ -27,12 +27,25 @@ export interface NameUpdate {
   namedBy?: 'agent';
 }
 
+type AttentionJudgment = 'needs-input' | 'working';
+
+/**
+ * The universal attention fallback for agents without a hook system: judges
+ * the current serialized screen once output quiesces. null means no opinion
+ * and the session's state stands.
+ */
+interface ScreenDetector {
+  readonly detectAttention: (screen: string) => AttentionJudgment | null;
+}
+
 /**
  * Everything specific to one agent CLI: how to spawn it, how to read its
  * hook payloads, where its session names come from, and how to resume a
  * session outside atc. The session core never sees past this interface.
  */
 export interface AgentAdapter {
+  // The detector stack's screen tier; null when hooks are authoritative.
+  readonly screenDetector: ScreenDetector | null;
   readonly planSpawn: (opts: SpawnOptions) => SpawnPlan;
   readonly normalizeHook: (e: HookEvent) => AdapterEvent;
   readonly loadName: (

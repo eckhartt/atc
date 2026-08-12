@@ -114,9 +114,36 @@ export class SessionManager {
 
   private readonly store: FleetStore;
 
-  constructor(adapter: AgentAdapter, store: FleetStore = jsonFleetStore) {
+  private readonly statusPath: string;
+
+  constructor(adapter: AgentAdapter, store: FleetStore = jsonFleetStore, statusPath = statusFile) {
     this.adapter = adapter;
     this.store = store;
+    this.statusPath = statusPath;
+  }
+
+  // The detector-stack screen tier reports through here: only flips between
+  // running and needs_you — hook-driven done/exited states always win.
+  updateAttention(id: string, state: 'needs_you' | 'running', msg: string) {
+    const s = this.sessions.find((x) => x.id === id);
+
+    if (!s || s.pty === null || s.state === state) {
+      return;
+    }
+
+    if (s.state !== 'running' && s.state !== 'needs_you') {
+      return;
+    }
+
+    s.state = state;
+    s.lastMsg = msg;
+
+    if (state === 'needs_you') {
+      s.unread = this.focusedId !== s.id;
+    }
+
+    this.onEvent('state', s);
+    this.emitChange();
   }
 
   get focused(): Session | null {
@@ -386,7 +413,7 @@ export class SessionManager {
     const urgent = this.sortSessions().find((s) => s.state === 'needs_you');
 
     try {
-      writeFileSync(statusFile, JSON.stringify({ ...c, urgent: urgent?.name ?? null }));
+      writeFileSync(this.statusPath, JSON.stringify({ ...c, urgent: urgent?.name ?? null }));
     } catch {}
   }
 

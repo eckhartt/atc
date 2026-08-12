@@ -48,7 +48,7 @@ Status: done
 
 ## Phase 4 — attention and permissions
 
-Status: not started
+Status: done
 
 - Permission request/response as first-class protocol messages, even while PTY sessions can't answer
   them structurally.

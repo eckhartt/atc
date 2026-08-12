@@ -29,6 +29,9 @@ export interface DaemonOptions {
   // When set, the daemon's pid is written here and removed on stop.
   readonly pidPath?: string;
 
+  // Where the statusline contract file is written; defaults to the real one.
+  readonly statusPath?: string;
+
   // Outbound queue capacity per client; small values force desync in tests.
   readonly queueBytes?: number;
 }
@@ -52,7 +55,12 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   }
 
   const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
-  const mgr = new SessionManager(opts.adapter, store);
+
+  const mgr =
+    opts.statusPath === undefined
+      ? new SessionManager(opts.adapter, store)
+      : new SessionManager(opts.adapter, store, opts.statusPath);
+
   const clients = new Set<DaemonConnection>();
 
   const emitEvent = (event: EventMsg) => {
@@ -83,6 +91,31 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const ptyDims = new Map<string, Dims>();
   const screens = new Map<string, ScreenModel>();
   const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const detectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // The screen tier of the detector stack: once a session's output has
+  // quiesced, judge the serialized screen and flip running/needs_you.
+  const scheduleDetect = (sessionID: string) => {
+    const detector = opts.adapter.screenDetector;
+
+    if (detector === null) {
+      return;
+    }
+
+    const pending = detectTimers.get(sessionID);
+
+    if (pending !== undefined) {
+      clearTimeout(pending);
+    }
+
+    detectTimers.set(
+      sessionID,
+      setTimeout(() => {
+        detectTimers.delete(sessionID);
+        void applyScreenJudgment(sessionID);
+      }, 300),
+    );
+  };
 
   // Replay is the serialized screen sent as ordinary output events: the
   // client cannot tell replay from live and does not need to. A clear leads
@@ -153,10 +186,33 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     );
   };
 
+  const applyScreenJudgment = async (sessionID: string) => {
+    const detector = opts.adapter.screenDetector;
+    const model = screens.get(sessionID);
+
+    if (detector === null || model === undefined) {
+      return;
+    }
+
+    const screen = await model.renderReplay();
+
+    const judgment = detector.detectAttention(screen);
+
+    if (judgment === 'needs-input') {
+      mgr.updateAttention(sessionID, 'needs_you', 'waiting at a prompt');
+    }
+
+    if (judgment === 'working') {
+      mgr.updateAttention(sessionID, 'running', 'working');
+    }
+  };
+
   mgr.onOutput = (s, data) => {
     // The screen model consumes every byte continuously — background output
     // is consumed, not discarded.
     screens.get(s.id)?.record(data);
+    scheduleDetect(s.id);
+
     const conns = attachments.collectClients(s.id);
 
     if (conns.length === 0) {
@@ -215,6 +271,14 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       ptyDims.delete(s.id);
       screens.get(s.id)?.stop();
       screens.delete(s.id);
+
+      const pendingDetect = detectTimers.get(s.id);
+
+      if (pendingDetect !== undefined) {
+        clearTimeout(pendingDetect);
+
+        detectTimers.delete(s.id);
+      }
     }
 
     const builders: Record<typeof kind, () => EventMsg> = {
@@ -390,6 +454,10 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   return {
     stop() {
       for (const timer of resizeTimers.values()) {
+        clearTimeout(timer);
+      }
+
+      for (const timer of detectTimers.values()) {
         clearTimeout(timer);
       }
 

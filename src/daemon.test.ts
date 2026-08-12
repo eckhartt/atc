@@ -11,6 +11,7 @@ import { OutboundQueue } from './outbound-queue';
 // never writes state files. Session behavior runs against a daemon
 // subprocess with an isolated HOME in test/daemon-e2e.test.ts.
 const idleAdapter: AgentAdapter = {
+  screenDetector: null,
   planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
   normalizeHook: () => ({ kind: 'heartbeat' }),
   loadName: () => Promise.resolve(null),
