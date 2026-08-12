@@ -1,0 +1,11 @@
+# Secret-scanning config for gitleaks (PR job + pre-commit hook). Extends the
+# default ruleset; every allowlist is scoped to the rules its files actually
+# trip, so any other kind of secret in those files still flags.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+targetRules = ["private-key", "jwt"]
+description = "test files hold intentionally fake keys and tokens"
+paths = ['''\.test\.tsx?$''']

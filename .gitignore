@@ -1,1 +1,31 @@
-node_modules/
+# compiled output
+dist
+tmp
+coverage
+
+# git worktrees
+.worktrees
+
+# dependencies
+node_modules
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# System Files
+.DS_Store
+Thumbs.db
+*Zone.Identifier
+
+# caches
+.cache
+
+# Env files anywhere: only examples are committed
+.env
+.env.*
+!.env.example
+!.env.*.example

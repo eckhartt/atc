@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["bin/atc", "src/hook-report.ts", "src/statusline.ts", "test/**/*.test.ts"],
+  "project": ["src/**/*.ts", "test/**/*.ts"],
+  "ignoreDependencies": ["@stylistic/eslint-plugin", "@zgeoff/oxlint-config"]
+}

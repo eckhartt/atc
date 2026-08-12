@@ -1,0 +1,7 @@
+# build output
+**/dist/**
+**/coverage/**
+
+# nested checkouts and agent scratch
+.worktrees/**
+.claude/**

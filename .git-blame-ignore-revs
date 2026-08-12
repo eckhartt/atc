@@ -1,0 +1,3 @@
+# Mechanical whole-repo reformats — pass to git blame via
+# --ignore-revs-file, or set it once with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs

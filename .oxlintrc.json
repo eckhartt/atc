@@ -1,0 +1,77 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@zgeoff/oxlint-config/oxlintrc.json"],
+  "env": {
+    "node": true,
+    "es2024": true
+  },
+  "rules": {
+    "zgeoff/function-verb": [
+      "error",
+      {
+        "verbs": [
+          "ack",
+          "adopt",
+          "attach",
+          "boot",
+          "copy",
+          "draw",
+          "jiggle",
+          "kill",
+          "log",
+          "open",
+          "quit",
+          "record",
+          "refresh",
+          "restore",
+          "schedule",
+          "spawn",
+          "truncate",
+          "yank"
+        ],
+        "exemptNames": [
+          "cols",
+          "rows",
+          "ptyRows",
+          "out",
+          "main",
+          "boxTop",
+          "boxDivider",
+          "boxBottom",
+          "boxRow",
+          "dimRow"
+        ]
+      }
+    ],
+    "typescript/prefer-readonly-parameter-types": [
+      "error",
+      {
+        "ignoreInferredTypes": true,
+        "allow": [
+          { "from": "lib", "name": "Buffer" },
+          { "from": "package", "name": "Buffer", "package": "@types/node" },
+          // a live PTY process handle: connection and event state, no readonly form
+          { "from": "package", "name": "IPty", "package": "bun-pty" },
+          // mutable by design: sessions are live state, views borrow them
+          { "from": "file", "name": "Session" },
+          { "from": "file", "name": "SessionManager" },
+          { "from": "file", "name": "Config" },
+          { "from": "file", "name": "HookEvent" },
+          { "from": "file", "name": "OverlayView" },
+          { "from": "file", "name": "PickerView" }
+        ]
+      }
+    ],
+    "max-statements": "off",
+    "max-lines-per-function": "off",
+    "max-lines": "off",
+    "max-params": "off",
+    "no-inline-comments": "off",
+    "no-continue": "off",
+    "init-declarations": "off",
+    "no-await-in-loop": "off",
+    "promise/avoid-new": "off",
+    "require-unicode-regexp": "off"
+  },
+  "ignorePatterns": [".claude/**"]
+}
