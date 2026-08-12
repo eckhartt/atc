@@ -214,6 +214,53 @@ test('it turns hook notifications into session.state broadcasts', async () => {
   });
 });
 
+test('it keeps a live terminal alive when its session reports an end', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'needs_you');
+
+  const reporter = Bun.spawn([process.execPath, join(repo, 'src', 'cli.ts'), 'hook-report'], {
+    stdin: new TextEncoder().encode(
+      JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'fake-1' }),
+    ),
+    env: collectEnv({
+      HOME: ctx.home,
+      ATC_SESSION_ID: id,
+      ATC_SOCKET: join(ctx.home, 'atc.sock'),
+    }),
+  });
+
+  await reporter.exited;
+
+  const ended = await waitForEvent(
+    events,
+    (e) => e.ev === 'session.state' && e['lastMsg'] === 'session ended',
+  );
+
+  expect(ended).toMatchObject({ alive: true, kind: 'pty', state: 'needs_you' });
+
+  const list = await client.sendRequest('session.list');
+
+  const sessions = getRecords(list, 'sessions');
+
+  expect(sessions[0]).toMatchObject({ alive: true, state: 'needs_you', lastMsg: 'session ended' });
+});
+
 test('it kills a live session to exited and a dead one to removed', async () => {
   const ctx = setupDaemonProc();
 

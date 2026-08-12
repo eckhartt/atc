@@ -411,6 +411,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         state: s.state,
         unread: s.unread,
         lastMsg: s.lastMsg,
+        kind: s.kind,
+        alive: s.pty !== null || (s.kind === 'jsonl' && s.state !== 'exited'),
         ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
       }),
       renamed: () => ({

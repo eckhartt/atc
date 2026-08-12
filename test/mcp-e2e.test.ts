@@ -92,7 +92,7 @@ sleep 30
     proc.kill();
 
     try {
-      const pid = Number(readFileSync(join(home, '.local', 'state', 'atc', 'daemon.pid'), 'utf8'));
+      const pid = Number(readFileSync(join(home, 'atc-daemon.pid'), 'utf8'));
 
       if (Number.isInteger(pid) && pid > 1) {
         process.kill(pid, 'SIGTERM');

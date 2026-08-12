@@ -479,7 +479,16 @@ function applyDaemonEvent(e: EventMsg) {
 
         if (next !== undefined) {
           s.state = next;
-          s.alive = next === 'exited' ? false : s.alive;
+        }
+
+        if (typeof e['alive'] === 'boolean') {
+          s.alive = e['alive'];
+        } else if (next === 'exited') {
+          s.alive = false;
+        }
+
+        if (e['kind'] === 'pty' || e['kind'] === 'jsonl') {
+          s.kind = e['kind'];
         }
 
         if (typeof e['unread'] === 'boolean') {

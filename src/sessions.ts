@@ -376,8 +376,15 @@ export class SessionManager {
         dirty = true;
         break;
       }
+
+      // A live terminal can report an end without dying — resuming claude
+      // closes the superseded session while its process stays interactive.
+      // Exited is reserved for a gone terminal; onExit owns that transition.
       case 'ended': {
-        s.state = 'exited';
+        if (s.pty === null) {
+          s.state = 'exited';
+        }
+
         s.unread = false;
         s.lastMsg = 'session ended';
         dirty = true;
