@@ -8,7 +8,7 @@ not window management.
 ## Process model
 
 ```text
-terminal ──> atc (src/index.ts)
+terminal ──> atc (src/cli.ts ──> src/index.ts)
               ├── PTY per session ──> claude --settings <generated>
               ├── unix socket server (hook + statusline reports)
               └── state files in ~/.local/state/atc/
@@ -28,10 +28,10 @@ terminal ──> atc (src/index.ts)
 Sessions are instrumented via a generated settings file passed as `claude --settings`:
 
 - Hooks (`SessionStart`, `Notification`, `Stop`, `UserPromptSubmit`, `SessionEnd`) run
-  `src/hook-report.ts`, which forwards the event JSON to atc's unix socket. `SessionStart` carries
-  the Claude session id at spawn/resume time, which is what makes the fleet restorable before any
+  `atc hook-report`, which forwards the event JSON to atc's unix socket. `SessionStart` carries the
+  Claude session id at spawn/resume time, which is what makes the fleet restorable before any
   interaction.
-- The statusline command (`src/statusline.ts`) chains the user's own configured statusline, then
+- The statusline command (`atc statusline`) chains the user's own configured statusline, then
   appends the fleet segment read from `status.json`, so fleet state renders inside Claude Code's own
   status line while attached. Its stdin JSON is also heartbeated to the socket as a second
   id-capture path.
