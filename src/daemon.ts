@@ -44,6 +44,10 @@ export interface DaemonOptions {
   // SDK, which spawns real claude — a boundary tests never cross. Absent
   // means eject is unsupported.
   readonly headlessRunner?: HeadlessRunner;
+
+  // How long an eject waits for the dying terminal to report SessionEnd
+  // before starting the headless run anyway.
+  readonly ejectSettleMs?: number;
 }
 
 interface HeadlessRunRequest {
@@ -155,6 +159,11 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   };
 
   const headlessRuns = new Map<string, { readonly stop: () => void }>();
+
+  // Resuming an agent session while its old process is still shutting down
+  // corrupts the handoff, so an eject waits for the terminal's final report
+  // (or a settle timeout) before the headless run starts.
+  const pendingEjects = new Map<string, () => void>();
 
   const startHeadlessTurn = (sessionID: string, prompt: string): boolean => {
     const runner = opts.headlessRunner;
@@ -421,6 +430,10 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       store.recordEvent(e);
     }
 
+    if (e.event === 'SessionEnd') {
+      pendingEjects.get(e.atcId)?.();
+    }
+
     mgr.applyHook(e);
   }, opts.reporterSocketPath);
 
@@ -460,7 +473,20 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         return 'missing';
       }
 
-      startHeadlessTurn(id, prompt);
+      const settled = Promise.withResolvers<void>();
+      const timer = setTimeout(settled.resolve, opts.ejectSettleMs ?? 4000);
+
+      pendingEjects.set(id, settled.resolve);
+
+      void (async () => {
+        await settled.promise;
+
+        clearTimeout(timer);
+
+        pendingEjects.delete(id);
+
+        startHeadlessTurn(id, prompt);
+      })();
 
       return 'ok';
     },

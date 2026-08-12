@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { collectCleanEnv } from './collect-clean-env';
 import { isRecord } from './report';
 
 const PERMISSION_MODES = [
@@ -42,12 +43,17 @@ export function startHeadlessRun(
   void (async () => {
     try {
       const mode = PERMISSION_MODES.find((m) => m === opts.permissionMode);
+      let stderrTail = '';
 
       const stream = query({
         prompt: opts.prompt,
         options: {
           cwd: opts.cwd,
+          env: collectCleanEnv(),
           abortController: controller,
+          stderr: (data: string) => {
+            stderrTail = `${stderrTail}${data}`.slice(-2000);
+          },
           ...(opts.resume === undefined ? {} : { resume: opts.resume }),
           ...(mode === undefined ? {} : { permissionMode: mode }),
         },
@@ -60,13 +66,20 @@ export function startHeadlessRun(
           hooks.onOutput(`${rendered}\r\n`);
         }
 
-        if (message.type === 'result') {
-          if (message.subtype === 'success') {
-            hooks.onDone(truncateSummary(message.result));
-          } else {
-            hooks.onNeedsYou(`headless run stopped: ${message.subtype}`);
-          }
+        if (message.type !== 'result') {
+          continue;
         }
+
+        if (message.subtype === 'success') {
+          hooks.onDone(truncateSummary(message.result));
+          continue;
+        }
+
+        if (stderrTail.trim() !== '') {
+          hooks.onOutput(`headless stderr: ${stderrTail.trim()}\r\n`);
+        }
+
+        hooks.onNeedsYou(`headless run stopped: ${message.subtype}`);
       }
     } catch (error) {
       if (!controller.signal.aborted) {

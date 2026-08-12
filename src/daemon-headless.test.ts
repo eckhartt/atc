@@ -17,10 +17,27 @@ const sleepAdapter: AgentAdapter = {
   buildResumeCommand: () => null,
 };
 
+interface FakeRun {
+  readonly opts: Readonly<Record<string, unknown>>;
+  readonly finish: (how: 'done' | 'stuck') => void;
+}
+
 interface HeadlessContext {
   readonly client: DaemonClient;
   readonly events: EventMsg[];
-  readonly runs: { opts: Record<string, unknown>; finish: (how: 'done' | 'stuck') => void }[];
+  readonly runs: FakeRun[];
+}
+
+async function waitForRun(runs: readonly FakeRun[], count: number): Promise<void> {
+  const deadline = Date.now() + 3000;
+
+  while (runs.length < count && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+
+  if (runs.length < count) {
+    throw new Error(`headless run ${count} never started`);
+  }
 }
 
 async function setupHeadlessDaemon(withRunner = true): Promise<HeadlessContext> {
@@ -52,6 +69,7 @@ async function setupHeadlessDaemon(withRunner = true): Promise<HeadlessContext> 
     adapter: sleepAdapter,
     dbPath: join(dir, 'state.db'),
     statusPath: join(dir, 'status.json'),
+    ejectSettleMs: 30,
     ...(withRunner ? { headlessRunner: startFakeRun } : {}),
   });
 
@@ -120,7 +138,8 @@ test('it ejects a terminal session into a headless run with its agent id', async
   const ok = await ctx.client.sendRequest('session.eject', { session: id, prompt: 'keep going' });
 
   expect(ok).toStrictEqual({});
-  expect(ctx.runs).toHaveLength(1);
+
+  await waitForRun(ctx.runs, 1);
 
   expect(ctx.runs[0]?.opts).toStrictEqual({
     cwd: '/tmp',
@@ -146,6 +165,8 @@ test('it reports a finished headless turn as done', async () => {
 
   await ctx.client.sendRequest('session.eject', { session: id });
 
+  await waitForRun(ctx.runs, 1);
+
   ctx.runs[0]?.finish('done');
 
   const done = await waitForEvent(
@@ -162,6 +183,8 @@ test('it reports a stuck headless turn as needs_you', async () => {
 
   await ctx.client.sendRequest('session.eject', { session: id });
 
+  await waitForRun(ctx.runs, 1);
+
   ctx.runs[0]?.finish('stuck');
 
   const needy = await waitForEvent(
@@ -177,6 +200,8 @@ test('it starts the next headless turn from session input once idle', async () =
   const id = await spawnResumable((m, p) => ctx.client.sendRequest(m, p));
 
   await ctx.client.sendRequest('session.eject', { session: id });
+
+  await waitForRun(ctx.runs, 1);
 
   ctx.runs[0]?.finish('done');
 
@@ -195,6 +220,8 @@ test('it refuses input to a headless session mid-run', async () => {
 
   await ctx.client.sendRequest('session.eject', { session: id });
 
+  await waitForRun(ctx.runs, 1);
+
   expect(
     ctx.client.sendRequest('session.input', { session: id, d: 'hasty\n' }),
   ).rejects.toMatchObject({ code: 'too_slow' });
@@ -205,6 +232,8 @@ test('it adopts a headless session back into a terminal', async () => {
   const id = await spawnResumable((m, p) => ctx.client.sendRequest(m, p));
 
   await ctx.client.sendRequest('session.eject', { session: id });
+
+  await waitForRun(ctx.runs, 1);
 
   ctx.runs[0]?.finish('done');
 

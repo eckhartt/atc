@@ -36,6 +36,9 @@ fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches 
 | `Enter`         | overlay        | attach (auto-acks)                                                                             |
 | `/`             | overlay        | fzf-style filter: type to narrow by name/dir, `⏎` attach top match, `esc` clear                |
 | `a`             | overlay        | ack notification without attaching                                                             |
+| `b`             | overlay        | fleet brief — a model-written summary of what needs you and what finished                      |
+| `H`             | overlay        | eject to headless: the terminal dies, a headless Agent SDK run resumes the same session        |
+| `P`             | overlay        | re-adopt a headless session into a fresh terminal                                              |
 | `y`             | overlay        | yank `cd <dir> && claude --resume <id>` to clipboard (OSC 52 + clip.exe/wl-copy/xclip)         |
 | `Y`             | overlay        | eject: yank the resume command, then kill the session here — paste it in any pane to take over |
 | `K`             | overlay        | kill selected (confirm with `y`)                                                               |
@@ -62,9 +65,12 @@ status bar turns red and names the most urgent session.
 { "claudeBin": "claude", "claudeArgs": [] }
 ```
 
-`claudeArgs` is prepended to every spawn (e.g. `["--model", "opus"]`). Daemon state — the restorable
-fleet, spawn-dir history, and the hook-event trail — lives in `~/.local/state/atc/atc.db` (SQLite),
-next to `status.json` (read by the injected statusline) and `daemon.pid`.
+`claudeArgs` is prepended to every spawn (e.g. `["--model", "opus"]`). The fleet brief (`b`) calls
+the Messages API from the daemon — export `ANTHROPIC_API_KEY` in the shell that first runs `atc` to
+light it up. `atc mcp` exposes the fleet as MCP tools (list, spawn, drive, brief) to any MCP client,
+wrangled sessions included. Daemon state — the restorable fleet, spawn-dir history, and the
+hook-event trail — lives in `~/.local/state/atc/atc.db` (SQLite), next to `status.json` (read by the
+injected statusline) and `daemon.pid`.
 
 ## Crash safety
 

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { spawn } from 'bun-pty';
 import type { IPty } from 'bun-pty';
 import type { AgentAdapter } from './agent-adapter';
+import { collectCleanEnv } from './collect-clean-env';
 import { socketPath, stateDir, statusFile } from './config';
 import type { HookEvent } from './hooks';
 import { isRecord } from './report';
@@ -90,18 +91,6 @@ function loadFleet(): FleetEntry[] {
   }
 }
 
-function collectEnv(extra: Readonly<Record<string, string>>): Record<string, string> {
-  const env: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
-
-  return { ...env, ...extra };
-}
-
 export class SessionManager {
   sessions: Session[] = [];
 
@@ -164,7 +153,7 @@ export class SessionManager {
       cols,
       rows,
       cwd: s.cwd,
-      env: collectEnv({ ATC_SESSION_ID: s.id, ATC_SOCKET: socketPath }),
+      env: collectCleanEnv({ ATC_SESSION_ID: s.id, ATC_SOCKET: socketPath }),
     });
 
     s.pty = pty;
@@ -258,7 +247,7 @@ export class SessionManager {
       cols,
       rows,
       cwd,
-      env: collectEnv({ ATC_SESSION_ID: id, ATC_SOCKET: socketPath }),
+      env: collectCleanEnv({ ATC_SESSION_ID: id, ATC_SOCKET: socketPath }),
     });
 
     let initialMsg = prompt;
@@ -288,7 +277,9 @@ export class SessionManager {
     pty.onExit(() => {
       session.pty = null;
 
-      if (session.state !== 'exited') {
+      // A session mid-handoff keeps its headless state; the terminal dying
+      // is expected there, not an exit.
+      if (session.kind === 'pty' && session.state !== 'exited') {
         session.state = 'exited';
         session.unread = this.focusedId !== session.id;
         session.lastMsg = 'process exited';
@@ -326,7 +317,9 @@ export class SessionManager {
   applyHook(e: HookEvent) {
     const s = this.sessions.find((x) => x.id === e.atcId);
 
-    if (!s) {
+    // Reporters belong to the terminal process; once a session is headless,
+    // late reports from the dying terminal must not clobber its state.
+    if (!s || s.kind === 'jsonl') {
       return;
     }
 

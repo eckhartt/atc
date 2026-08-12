@@ -57,7 +57,7 @@ Status: done
 
 ## Phase 5 — inbox intelligence, MCP, and headless handoff
 
-Status: in progress
+Status: done
 
 Build order:
 
