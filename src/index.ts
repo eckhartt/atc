@@ -9,6 +9,7 @@ import {
   ansi,
   cols,
   drawBrief,
+  drawHelp,
   drawHome,
   drawOverlay,
   drawPicker,
@@ -21,6 +22,7 @@ type Mode =
   | 'attached'
   | 'overlay'
   | 'brief'
+  | 'help'
   | 'picker-dir'
   | 'picker-name'
   | 'picker-prompt'
@@ -201,6 +203,22 @@ async function openBrief() {
     stdout.write(ansi.clear);
 
     drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
+  }
+}
+
+function openHelp() {
+  mode = 'help';
+
+  stdout.write(ansi.clear);
+
+  drawHelp();
+}
+
+function applyHelpKey(buf: Buffer) {
+  const ch = buf.toString();
+
+  if (buf[0] === KEY.esc || ch === '?' || ch === 'q' || buf[0] === KEY.ctrlSpace) {
+    openOverlay();
   }
 }
 
@@ -715,6 +733,12 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
+  if (ch === '?') {
+    openHelp();
+
+    return;
+  }
+
   if (ch === 'H' && sel !== undefined && sel.kind === 'pty' && sel.alive) {
     ejectTarget = sel.id;
     pickerInput = '';
@@ -962,6 +986,11 @@ process.stdin.on('data', (buf: Buffer) => {
     }
     case 'brief': {
       applyBriefKey(buf);
+
+      return;
+    }
+    case 'help': {
+      applyHelpKey(buf);
 
       return;
     }

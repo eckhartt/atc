@@ -42,6 +42,7 @@ fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches 
 | `y`             | overlay        | yank `cd <dir> && claude --resume <id>` to clipboard (OSC 52 + clip.exe/wl-copy/xclip)         |
 | `Y`             | overlay        | eject: yank the resume command, then kill the session here — paste it in any pane to take over |
 | `K`             | overlay        | kill selected (confirm with `y`) — the entry stays revivable with `P`; a second `K` forgets it |
+| `?`             | overlay        | full key reference — the hint row only shows actions valid for the selected session            |
 | `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                          |
 
 Revive (`P`) and headless eject (`H`) resume the session from its saved transcript, so both need one

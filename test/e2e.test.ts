@@ -276,6 +276,29 @@ test('it narrows the overlay to sessions matching the slash filter', async () =>
   expect(ctx.read()).not.toInclude('alpha        ');
 });
 
+test('it opens the key reference from the overlay and returns on esc', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnSession(ctx, pty, 'helptest');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
+
+  pty.write('?');
+
+  await ctx.waitFor('adopt an external session');
+
+  ctx.reset();
+  pty.write('\u001B');
+
+  await ctx.waitFor('helptest');
+});
+
 test('it adopts a session with --resume and yanks its resume command', async () => {
   await using ctx = setupTest();
 

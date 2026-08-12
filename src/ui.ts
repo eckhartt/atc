@@ -147,8 +147,15 @@ function dimRow(width: number, text: string): Row {
   return boxRow(width, `${ESC}[90m${t}${ESC}[0m`, t.length);
 }
 
+// Selection-dependent hints need the liveness facts of each row.
+export interface OverlaySessionView extends SessionView {
+  readonly alive: boolean;
+  readonly kind: 'pty' | 'jsonl';
+  readonly resumable: boolean;
+}
+
 export interface OverlayView {
-  sessions: readonly SessionView[];
+  sessions: readonly OverlaySessionView[];
   selected: number;
   confirmKill: boolean;
   filter: string | null;
@@ -189,24 +196,77 @@ export function drawOverlay(view: OverlayView) {
     );
   }
 
-  let hints = [
-    '↑↓/jk · ⏎ attach · / filter · a ack · b brief · n new · r adopt · q quit',
-    'H headless · P revive · y yank · Y eject · K kill',
-  ];
+  let hint = buildOverlayHint(view.sessions[view.selected]);
 
   if (view.filter !== null) {
-    hints = ['type to filter · ↑↓ move · ⏎ attach · esc clear'];
+    hint = 'type to filter · ↑↓ move · ⏎ attach · esc clear';
   }
 
   if (view.confirmKill) {
-    hints = ['kill selected session? y / n'];
+    hint = 'kill selected session? y / n';
   }
 
-  for (const hint of hints) {
-    rowsList.push(dimRow(width, hint));
+  rowsList.push(dimRow(width, hint), boxBottom(width));
+
+  drawBox(rowsList);
+}
+
+const GLOBAL_HINT = 'n new · b brief · ? keys';
+
+// Only the actions valid for the selected row appear; the full reference
+// lives behind ?.
+function buildOverlayHint(s: OverlaySessionView | undefined): string {
+  if (s === undefined) {
+    return GLOBAL_HINT;
   }
 
-  rowsList.push(boxBottom(width));
+  const actions: string[] = [];
+
+  if (s.kind === 'jsonl' && s.alive) {
+    actions.push('P reattach', 'K kill');
+  } else if (s.alive) {
+    actions.push('⏎ attach');
+
+    if (s.state === 'needs_you') {
+      actions.push('a ack');
+    }
+
+    actions.push('H headless', 'y yank', 'Y eject', 'K kill');
+  } else {
+    if (s.resumable) {
+      actions.push('P revive', 'y yank');
+    }
+
+    actions.push('K forget');
+  }
+
+  return `${actions.join(' · ')} ▏ ${GLOBAL_HINT}`;
+}
+
+export function drawHelp() {
+  const width = Math.min(cols() - 4, 60);
+
+  const lines = [
+    '⏎  attach the selected session',
+    'a  ack its notification without attaching',
+    'H  eject to a headless run',
+    'P  revive a dead or headless session',
+    'y  yank the resume command to the clipboard',
+    'Y  yank the resume command, then kill here',
+    'K  kill (K again on a dead session forgets it)',
+    'n  new session',
+    'r  adopt an external session',
+    'b  fleet brief',
+    '/  filter · ↑↓/jk move · q quit',
+  ];
+
+  const rowsList: Row[] = [boxTop(width, 'keys')];
+
+  for (const line of lines) {
+    rowsList.push(boxRow(width, line, line.length));
+  }
+
+  rowsList.push(boxDivider(width), dimRow(width, 'esc/? back'), boxBottom(width));
 
   drawBox(rowsList);
 }
