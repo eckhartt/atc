@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Terminal control tower for Claude Code sessions",
+  "license": "MIT",
   "bin": {
     "atc": "bin/atc"
   },
