@@ -597,6 +597,10 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
 process.stdin.setRawMode(true);
 process.stdin.resume();
 
+// Stateful decode for the stdin -> PTY path: a multi-byte character split
+// across two stdin reads must not be mangled by per-chunk toString().
+const stdinDecoder = new TextDecoder('utf-8');
+
 process.stdin.on('data', (buf: Buffer) => {
   switch (mode) {
     case 'attached': {
@@ -608,7 +612,7 @@ process.stdin.on('data', (buf: Buffer) => {
 
       const f = mgr.focused;
 
-      f?.pty?.write(buf.toString());
+      f?.pty?.write(stdinDecoder.decode(buf, { stream: true }));
 
       return;
     }
