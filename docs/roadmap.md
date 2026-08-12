@@ -7,7 +7,7 @@ between phases.
 
 ## Phase 1 — subcommand entry and adapter extraction
 
-Status: not started
+Status: done
 
 - Restructure the entrypoint into one CLI with subcommands: `atc` (client/UI), `atc hook-report`,
   `atc statusline` — the injected settings reference `process.execPath` subcommands instead of loose
