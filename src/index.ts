@@ -37,6 +37,7 @@ interface MirrorSession {
   createdAt: number;
   kind: 'pty' | 'jsonl';
   alive: boolean;
+  resumable: boolean;
 }
 
 let mode: Mode = 'home';
@@ -403,6 +404,7 @@ function toMirrorSession(value: unknown): MirrorSession | null {
     createdAt: value['createdAt'],
     kind: value['kind'] === 'jsonl' ? 'jsonl' : 'pty',
     alive: value['alive'],
+    resumable: typeof value['claudeId'] === 'string',
   };
 }
 
@@ -418,6 +420,7 @@ function upsertMirror(d: Readonly<MirrorSession>) {
     existing.lastMsg = d.lastMsg;
     existing.kind = d.kind;
     existing.alive = d.alive;
+    existing.resumable = d.resumable;
   }
 }
 
@@ -473,6 +476,10 @@ function applyDaemonEvent(e: EventMsg) {
 
         if (typeof e['lastMsg'] === 'string') {
           s.lastMsg = e['lastMsg'];
+        }
+
+        if (typeof e['claudeId'] === 'string') {
+          s.resumable = true;
         }
       }
 
@@ -699,7 +706,7 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
-  if (ch === 'P' && sel !== undefined && sel.kind === 'jsonl') {
+  if (ch === 'P' && sel !== undefined && sel.resumable && (sel.kind === 'jsonl' || !sel.alive)) {
     void adoptSession(sel.id);
 
     return;

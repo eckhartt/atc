@@ -38,10 +38,10 @@ fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches 
 | `a`             | overlay        | ack notification without attaching                                                             |
 | `b`             | overlay        | fleet brief — a model-written summary of what needs you and what finished                      |
 | `H`             | overlay        | eject to headless: the terminal dies, a headless Agent SDK run resumes the same session        |
-| `P`             | overlay        | re-adopt a headless session into a fresh terminal                                              |
+| `P`             | overlay        | revive: a fresh terminal resumes a headless or killed session in place                         |
 | `y`             | overlay        | yank `cd <dir> && claude --resume <id>` to clipboard (OSC 52 + clip.exe/wl-copy/xclip)         |
 | `Y`             | overlay        | eject: yank the resume command, then kill the session here — paste it in any pane to take over |
-| `K`             | overlay        | kill selected (confirm with `y`)                                                               |
+| `K`             | overlay        | kill selected (confirm with `y`) — the entry stays revivable with `P`; a second `K` forgets it |
 | `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                          |
 
 Everything else is passed through to the focused Claude session, which owns the full screen. Fleet

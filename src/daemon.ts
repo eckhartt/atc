@@ -411,6 +411,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         state: s.state,
         unread: s.unread,
         lastMsg: s.lastMsg,
+        ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
       }),
       renamed: () => ({
         v: PROTOCOL_V,

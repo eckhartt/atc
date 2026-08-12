@@ -432,3 +432,33 @@ test('it restores the fleet from disk after a crash', async () => {
   await ctx.waitFor('FAKE_CLAUDE_UP');
   await ctx.waitFor('--resume fake-1');
 });
+
+test('it revives a killed session in place with a fresh terminal', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnSession(ctx, pty, 'revivable');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
+
+  pty.write('K');
+
+  await ctx.waitFor('kill selected session?');
+
+  ctx.reset();
+  pty.write('y');
+
+  await ctx.waitFor('killed');
+
+  ctx.reset();
+  pty.write('P');
+
+  await ctx.waitFor('FAKE_CLAUDE_UP');
+
+  expect(ctx.read()).toInclude('--resume fake-1');
+}, 15_000);

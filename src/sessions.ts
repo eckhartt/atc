@@ -159,7 +159,7 @@ export class SessionManager {
     s.pty = pty;
     s.kind = 'pty';
     s.state = 'running';
-    s.lastMsg = 'adopted from headless';
+    s.lastMsg = 'revived';
 
     pty.onData((d) => {
       this.onOutput(s, d);
@@ -178,6 +178,7 @@ export class SessionManager {
       this.emitChange();
     });
 
+    this.writeFleet();
     this.onEvent('state', s);
     this.emitChange();
 
@@ -512,7 +513,9 @@ export class SessionManager {
     const fleet: FleetEntry[] = [];
 
     for (const s of this.sessions) {
-      if (s.pty !== null && s.claudeId !== undefined) {
+      const live = s.pty !== null || (s.kind === 'jsonl' && s.state !== 'exited');
+
+      if (live && s.claudeId !== undefined) {
         fleet.push({ name: s.name, cwd: s.cwd, claudeId: s.claudeId });
       }
     }

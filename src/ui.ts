@@ -191,7 +191,7 @@ export function drawOverlay(view: OverlayView) {
 
   let hints = [
     '↑↓/jk · ⏎ attach · / filter · a ack · b brief · n new · r adopt · q quit',
-    'H headless · P re-adopt · y yank · Y eject · K kill',
+    'H headless · P revive · y yank · Y eject · K kill',
   ];
 
   if (view.filter !== null) {
