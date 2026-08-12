@@ -309,3 +309,81 @@ test('it restores the fleet cold after a daemon crash', async () => {
   expect(sessions).toHaveLength(1);
   expect(sessions[0]).toMatchObject({ claudeId: 'fake-1', alive: true });
 });
+
+test('it broadcasts permission.requested when a session needs input', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+  await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const requested = await waitForEvent(events, (e) => e.ev === 'permission.requested');
+
+  expect(requested).toMatchObject({
+    message: 'needs permission',
+    respondable: false,
+    request: expect.toBeString() as string,
+  });
+});
+
+test('it answers permission.respond on a keystroke-only request with unsupported', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+  await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const requested = await waitForEvent(events, (e) => e.ev === 'permission.requested');
+
+  const request = getString(requested, 'request');
+
+  expect(
+    client.sendRequest('permission.respond', { request, decision: 'allow' }),
+  ).rejects.toMatchObject({ code: 'unsupported' });
+});
+
+test('it resolves a pending permission request as dismissed when the session dies', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  const requested = await waitForEvent(events, (e) => e.ev === 'permission.requested');
+
+  const request = getString(requested, 'request');
+
+  await client.sendRequest('session.kill', { session: id });
+
+  const resolved = await waitForEvent(
+    events,
+    (e) => e.ev === 'permission.resolved' && e['request'] === request,
+  );
+
+  expect(resolved['decision']).toBe('dismissed');
+});

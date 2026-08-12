@@ -12,6 +12,7 @@
         "verbs": [
           "ack",
           "adopt",
+          "answer",
           "attach",
           "boot",
           "copy",

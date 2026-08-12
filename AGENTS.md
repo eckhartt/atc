@@ -186,7 +186,7 @@ tooling, not app code.
 ## Function naming — project verbs
 
 Project additions to the shared taxonomy (keep in sync with `zgeoff/function-verb` in
-`.oxlintrc.json`): `ack`, `adopt`, `attach`, `boot`, `copy`, `draw`, `jiggle`, `kill`, `log`,
+`.oxlintrc.json`): `ack`, `adopt`, `answer`, `attach`, `boot`, `copy`, `draw`, `jiggle`, `kill`, `log`,
 `open`, `quit`, `record`, `refresh`, `restore`, `schedule`, `spawn`, `truncate`, `yank`.
 
 Exempt names (tiny geometry/row helpers and script entrypoints): `cols`, `rows`, `ptyRows`, `out`,

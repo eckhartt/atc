@@ -4,10 +4,12 @@ import type { AgentAdapter } from './agent-adapter';
 import { logEvent, startHookServer } from './hooks';
 import { OutboundQueue } from './outbound-queue';
 import type { SocketWriter } from './outbound-queue';
+import { PermissionRegistry } from './permission-registry';
+import type { AnswerResult } from './permission-registry';
 import { MAX_CHUNK, MAX_LINE, PROTOCOL_V, decodeMessage, encodeMessage } from './protocol';
 import type { ErrorCode, EventMsg, RequestMsg } from './protocol';
 import { SessionManager, loadFleet } from './sessions';
-import type { SessionDescriptor } from './sessions';
+import type { SessionDescriptor, SessionState } from './sessions';
 
 export interface DaemonOptions {
   readonly socketPath: string;
@@ -35,7 +37,58 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const mgr = new SessionManager(opts.adapter);
   const clients = new Set<Connection>();
 
+  const emitEvent = (event: EventMsg) => {
+    for (const client of clients) {
+      client.sendEvent(event);
+    }
+  };
+
+  const registry = new PermissionRegistry();
+
+  registry.onRequested = (req) => {
+    emitEvent({
+      v: PROTOCOL_V,
+      ev: 'permission.requested',
+      request: req.id,
+      s: req.sessionID,
+      message: req.message,
+      respondable: req.respondable,
+    });
+  };
+
+  registry.onResolved = (id, decision) => {
+    emitEvent({ v: PROTOCOL_V, ev: 'permission.resolved', request: id, decision });
+  };
+
+  // Permission requests are synthesized from attention transitions: entering
+  // needs_you opens one, and leaving it (answered directly in the terminal,
+  // or the session dying) dismisses whatever is pending.
+  const lastStates = new Map<string, SessionState>();
+
+  const recordAttention: SessionManager['onEvent'] = (kind, s) => {
+    if (kind === 'removed') {
+      registry.answerAll(s.id, 'dismissed');
+      lastStates.delete(s.id);
+
+      return;
+    }
+
+    const prev = lastStates.get(s.id);
+
+    lastStates.set(s.id, s.state);
+
+    if (s.state === 'needs_you' && prev !== 'needs_you') {
+      registry.open(s.id, s.lastMsg, false);
+    }
+
+    if (prev === 'needs_you' && s.state !== 'needs_you') {
+      registry.answerAll(s.id, 'dismissed');
+    }
+  };
+
   mgr.onEvent = (kind, s) => {
+    recordAttention(kind, s);
+
     const builders: Record<typeof kind, () => EventMsg> = {
       added: () => ({ v: PROTOCOL_V, ev: 'session.added', session: getDescriptor(mgr, s.id) }),
       state: () => ({
@@ -56,11 +109,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       removed: () => ({ v: PROTOCOL_V, ev: 'session.removed', s: s.id }),
     };
 
-    const event = builders[kind]();
-
-    for (const client of clients) {
-      client.sendEvent(event);
-    }
+    emitEvent(builders[kind]());
   };
 
   const reporter = startHookServer((e) => {
@@ -98,6 +147,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       return true;
     },
     buildResumeCommand: (id) => mgr.buildResumeCommand(id),
+    answerPermission: (request, decision) => registry.answer(request, decision),
     restoreFleet: (cols, rows) => {
       let restored = 0;
 
@@ -178,6 +228,7 @@ interface DaemonContext {
   readonly killSession: (id: string) => boolean;
   readonly ackSession: (id: string) => boolean;
   readonly buildResumeCommand: (id: string) => string | null;
+  readonly answerPermission: (request: string, decision: string) => AnswerResult;
   readonly restoreFleet: (cols: number, rows: number) => number;
 }
 
@@ -312,6 +363,11 @@ class Connection {
 
         return;
       }
+      case 'permission.respond': {
+        this.applyPermissionRespond(req);
+
+        return;
+      }
       case 'fleet.restore': {
         const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
         const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
@@ -354,6 +410,40 @@ class Connection {
     });
 
     this.sendOk(req.id, { session });
+  }
+
+  private applyPermissionRespond(req: RequestMsg): void {
+    const request = typeof req.p?.['request'] === 'string' ? req.p['request'] : '';
+    const decision = typeof req.p?.['decision'] === 'string' ? req.p['decision'] : '';
+
+    if (request === '' || decision === '') {
+      this.sendErr(req.id, 'bad_args', 'permission.respond requires a request and a decision');
+
+      return;
+    }
+
+    const result = this.ctx.answerPermission(request, decision);
+
+    switch (result) {
+      case 'ok': {
+        this.sendOk(req.id, {});
+
+        return;
+      }
+      case 'already_answered': {
+        this.sendErr(req.id, 'already_answered', `request '${request}' was already answered`);
+
+        return;
+      }
+      case 'unsupported': {
+        this.sendErr(req.id, 'unsupported', `request '${request}' is answered with keystrokes`);
+
+        return;
+      }
+      case 'unknown': {
+        this.sendErr(req.id, 'bad_args', `unknown permission request '${request}'`);
+      }
+    }
   }
 
   private applySessionVerb(req: RequestMsg, verb: (id: string) => boolean): void {
