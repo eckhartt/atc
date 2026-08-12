@@ -1,8 +1,6 @@
-import { spawn as spawnChild } from 'node:child_process';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import pkg from '../package.json';
-import { daemonSocketPath } from './config';
-import { DaemonClient } from './daemon-client';
+import { bootDaemonClient } from './boot-daemon';
 import { collectDirs, formatDir, pickMatches } from './dirs';
 import type { EventMsg } from './protocol';
 import { isRecord } from './report';
@@ -792,49 +790,7 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
   }
 }
 
-// ---- daemon connection ----
-
-function spawnDaemonDetached() {
-  const exec = process.execPath;
-  const isBun = basename(exec) === 'bun' || basename(exec) === 'bun.exe';
-  const args = isBun ? [join(import.meta.dir, 'cli.ts'), 'daemon'] : ['daemon'];
-
-  spawnChild(exec, args, { detached: true, stdio: 'ignore' }).unref();
-}
-
-async function tryOpenDaemon(): Promise<DaemonClient | null> {
-  try {
-    return await DaemonClient.open(daemonSocketPath);
-  } catch {
-    return null;
-  }
-}
-
-async function bootClient(): Promise<DaemonClient> {
-  let opened = await tryOpenDaemon();
-
-  if (opened === null) {
-    spawnDaemonDetached();
-
-    const deadline = Date.now() + 5000;
-
-    while (opened === null && Date.now() < deadline) {
-      await Bun.sleep(100);
-
-      opened = await tryOpenDaemon();
-    }
-  }
-
-  if (opened === null) {
-    throw new Error('the atc daemon did not come up; try `atc daemon` for its output');
-  }
-
-  await opened.sendHello(`atc/${pkg.version}`);
-
-  return opened;
-}
-
-const client = await bootClient();
+const client = await bootDaemonClient(`atc/${pkg.version}`);
 
 client.onEvent = applyDaemonEvent;
 

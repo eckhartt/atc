@@ -22,6 +22,18 @@ const main = defineCommand({
           await import('./index');
         },
       }),
+    mcp: () =>
+      defineCommand({
+        meta: {
+          name: 'mcp',
+          description: 'Run an MCP server over stdio exposing the fleet as tools',
+        },
+        async run() {
+          const server = await import('./mcp-server');
+
+          await server.runMCPServer(`atc/${pkg.version}`);
+        },
+      }),
     daemon: () =>
       defineCommand({
         meta: {
