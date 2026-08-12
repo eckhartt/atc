@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
-import pkg from '../package.json';
 import { bootDaemonClient } from './boot-daemon';
 import { collectDirs, formatDir, pickMatches } from './dirs';
+import { getBuild } from './get-build';
 import type { EventMsg } from './protocol';
 import { isRecord } from './report';
 import { countSessionStates, sortSessionViews } from './sessions';
@@ -843,7 +843,7 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
   }
 }
 
-const client = await bootDaemonClient(`atc/${pkg.version}`);
+const client = await bootDaemonClient(getBuild());
 
 client.onEvent = applyDaemonEvent;
 

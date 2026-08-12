@@ -2,6 +2,7 @@
 // `statusline` are the commands injected into wrangled sessions.
 import { defineCommand, runMain } from 'citty';
 import pkg from '../package.json';
+import { getBuild } from './get-build';
 
 const main = defineCommand({
   meta: {
@@ -31,7 +32,7 @@ const main = defineCommand({
         async run() {
           const server = await import('./mcp-server');
 
-          await server.runMCPServer(`atc/${pkg.version}`);
+          await server.runMCPServer(getBuild());
         },
       }),
     daemon: () =>
@@ -52,7 +53,7 @@ const main = defineCommand({
             headlessRunner: (runOpts, hooks) => headless.startHeadlessRun(runOpts, hooks),
             socketPath: config.daemonSocketPath,
             reporterSocketPath: config.socketPath,
-            build: `atc/${pkg.version}`,
+            build: getBuild(),
             adapter: new claude.ClaudeAdapter(config.loadConfig()),
             dbPath: config.dbFile,
             legacyFleetPath: config.legacyFleetFile,
