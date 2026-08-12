@@ -1,0 +1,13 @@
+{
+  "name": "atc",
+  "version": "0.1.0",
+  "description": "Terminal control tower for Claude Code sessions",
+  "type": "module",
+  "bin": { "atc": "bin/atc" },
+  "scripts": {
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "bun-pty": "^0.4.1"
+  }
+}
