@@ -11,8 +11,8 @@ design on measured evidence:
   plain text), and encode+parse costs ~0.1–0.2% of one core at a 1 MB/s worst case. The tmux
   control-mode ~4x tax comes from octal-escaping every control byte, which JSON does not do.
 - One parser, one id space, one socket dialect: the hook and statusline reporters already speak
-  NDJSON to the daemon socket, SDK agent sessions emit JSON natively, and the future MCP surface is
-  a field-rename away from the control envelope.
+  NDJSON to the daemon socket, SDK agent sessions emit JSON natively, and the future MCP tools are a
+  field-rename away from the control envelope.
 
 Revisit trigger: if the PTY layer is ever replaced with a byte-level provider, transparency returns
 and a base64 or binary data path earns reconsideration. Until then it is a cost with no benefit.
@@ -34,7 +34,7 @@ version) so a socket tap can interpret lines standalone.
 { "v": 1, "ev": "session.output", "s": "s7-m4x2p", "seq": 41, "d": "[1mhello[0m" }
 ```
 
-Methods are `noun.verb`; the future MCP surface maps them mechanically (`session.spawn` → tool
+Methods are `noun.verb`; the future MCP tools map onto them mechanically (`session.spawn` → tool
 `atc_session_spawn`, events → notifications). Error codes are human-readable strings from a closed,
 extendable set: `protocol_mismatch`, `unauthorized`, `unknown_method`, `bad_args`,
 `no_such_session`, `session_dead`, `unsupported`, `already_answered`, `too_slow`, `internal`. An

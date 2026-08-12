@@ -7,7 +7,7 @@ The target process model: a per-user daemon owns the sessions; thin clients atta
 
 ## Process model
 
-```
+```text
 atc (client TUI) ──┐
 atc (ssh client) ──┼── NDJSON protocol ──> atcd
                    │                        ├── PTY per session ──> claude
@@ -41,12 +41,12 @@ separate:
 ## Screen model
 
 A headless terminal emulator per session (`@xterm/headless` + serialize addon) consumes every PTY
-byte continuously — background output is consumed, not discarded. It is load-bearing for
-attach-replay, backpressure collapse-to-repaint, and multi-client fidelity, and it is also a future
-_detector input_: "is this agent waiting at a prompt?" is answerable from screen state for agents
-with no hook system. Scrollback is capped aggressively (current screen plus a few hundred lines);
-the protocol degrades without the emulator (jiggle-repaint fallback), so the daemon ships before the
-screen model has to.
+byte continuously — background output is consumed, not discarded. Attach-replay, backpressure
+collapse-to-repaint, and multi-client fidelity all depend on it, and it is also a future _detector
+input_: "is this agent waiting at a prompt?" is answerable from screen state for agents with no hook
+system. Scrollback is capped aggressively (current screen plus a few hundred lines); the protocol
+degrades without the emulator (jiggle-repaint fallback), so the daemon ships before the screen model
+has to.
 
 ## Sessions, surfaces, adapters
 
@@ -63,6 +63,5 @@ screen model has to.
 ## State
 
 SQLite (`bun:sqlite`) in the daemon replaces the JSON state files: sessions, fleet, event log, spawn
-history in one store with no cross-process write races. `status.json` alone survives as a
-write-through read surface, because statusline reporters in wrangled sessions read it without
-speaking the protocol.
+history in one store with no cross-process write races. `status.json` alone survives, because
+statusline reporters in wrangled sessions read it without speaking the protocol.

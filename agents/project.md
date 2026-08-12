@@ -44,16 +44,29 @@ Project additions to the shared taxonomy (keep in sync with `zgeoff/function-ver
 Exempt names (tiny geometry/row helpers and script entrypoints): `cols`, `rows`, `ptyRows`, `out`,
 `main`, `boxTop`, `boxDivider`, `boxBottom`, `boxRow`, `dimRow`.
 
+## Comments
+
+- JSDoc is always multi-line, never single-line `/** … */`.
+- No history or project state in comments — a comment describes the code as it is, never how it got
+  that way or what is planned.
+- Comments never name other declarations: renames strand the reference. Describe the behavior
+  instead.
+
+## Writing
+
+- All committed prose follows the `docs-writing` skill; run its `check-prose.sh` over touched docs
+  before committing.
+- Banned words in all prose (fix on sight): `bites`, `CAS`, `ceiling`, `fence`/`fencing`, `floor`,
+  `load-bearing`, `seam`, `surface`. One carve-out: `Surface` is the domain term for a session's
+  output producer (`PtySurface`, `SdkSurface`) — that sense is legal; the vague filler sense ("API
+  surface", "surfaces an error") stays banned.
+
 ## Testing
 
-- The suite is end-to-end by design: `test/e2e.test.ts` boots the real TUI inside a `bun-pty`
-  pseudo-terminal, drives it with keystrokes, and asserts on screen bytes. A fake `claude` bash
-  script stands in for the real binary and emits hook events through the real reporter.
-- Each test gets a fresh temp `$HOME` via `beforeEach` — the per-test isolation is deliberate
-  because tests exercise on-disk state (`fleet.json`, config, transcripts).
-- Flat `test('…')` blocks with behavioral titles; no `describe`.
-- Never spawn the real `claude` binary in tests; verification against real Claude Code happens
-  manually before merging changes to the integration contract.
+Testing conventions live in the `testing` skill (`.claude/skills/testing/SKILL.md`) — regimes,
+harness patterns, assertion discipline. Two rules worth restating here: never spawn the real
+`claude` binary in tests (verification against real Claude Code happens manually before merging
+changes to the integration contract), and every gate is invoked as a root package script.
 
 ## Dependencies
 

@@ -25,8 +25,8 @@ Status: not started · design: [daemon](./architecture/daemon.md),
   wire protocol over a unix socket.
 - tmux-style auto-spawn: the first `atc` invocation boots the daemon if absent.
 - Per-client focus; a session can stream to several clients.
-- SQLite (`bun:sqlite`) replaces the JSON state files, except `status.json`, which stays as the
-  statusline's read surface.
+- SQLite (`bun:sqlite`) replaces the JSON state files, except `status.json`, which the injected
+  statusline keeps reading directly.
 - Fleet restore demotes to cold-boot recovery after daemon death.
 
 Build order inside the phase (sequence matters more than the wire format):
@@ -47,7 +47,7 @@ Status: not started
 - Attach becomes instant screen replay; the resize-jiggle repaint dies.
 - Unlocks toast compositing over live sessions and session previews.
 
-## Phase 4 — attention and permission seams
+## Phase 4 — attention and permissions
 
 Status: not started
 

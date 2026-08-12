@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,12 +6,32 @@ import { spawn } from 'bun-pty';
 import type { IPty } from 'bun-pty';
 
 const repo = join(import.meta.dir, '..');
-let home: string;
-let p: IPty | null = null;
-let out = '';
+const CTRL_SPACE = String.fromCodePoint(0);
+const BEL = String.fromCodePoint(7);
 
-beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'atc-test-'));
+function collectEnv(extra: Readonly<Record<string, string>>): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+
+  return { ...env, ...extra };
+}
+
+interface TestContext {
+  home: string;
+  boot: () => IPty;
+  read: () => string;
+  reset: () => void;
+  waitFor: (needle: string, ms?: number) => Promise<void>;
+  [Symbol.asyncDispose]: () => Promise<void>;
+}
+
+function setupTest(): TestContext {
+  const home = mkdtempSync(join(tmpdir(), 'atc-test-'));
 
   mkdirSync(join(home, '.config', 'atc'), { recursive: true });
 
@@ -33,129 +53,135 @@ sleep 30
     join(home, '.config', 'atc', 'config.json'),
     JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
   );
-});
 
-afterEach(() => {
-  p?.kill();
-  p = null;
-  out = '';
+  let pty: IPty | null = null;
+  let out = '';
 
-  rmSync(home, { recursive: true, force: true });
-});
+  return {
+    home,
 
-function collectEnv(extra: Readonly<Record<string, string>>): Record<string, string> {
-  const env: Record<string, string> = {};
+    boot() {
+      pty = spawn(process.execPath, [join(repo, 'src', 'index.ts')], {
+        name: 'xterm-256color',
+        cols: 110,
+        rows: 30,
+        cwd: repo,
+        env: collectEnv({ HOME: home, XDG_RUNTIME_DIR: home, PATH: '/usr/sbin:/usr/bin:/bin' }),
+      });
 
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
+      pty.onData((d) => {
+        out += d;
+      });
 
-  return { ...env, ...extra };
+      return pty;
+    },
+
+    read() {
+      return out;
+    },
+
+    reset() {
+      out = '';
+    },
+
+    async waitFor(needle: string, ms = 4000) {
+      const start = Date.now();
+
+      while (Date.now() - start < ms) {
+        if (out.includes(needle)) {
+          return;
+        }
+
+        await Bun.sleep(50);
+      }
+
+      throw new Error(
+        `timed out waiting for ${JSON.stringify(needle)}; tail: ${JSON.stringify(out.slice(-400))}`,
+      );
+    },
+
+    [Symbol.asyncDispose]() {
+      pty?.kill();
+      rmSync(home, { recursive: true, force: true });
+
+      return Promise.resolve();
+    },
+  };
 }
 
-function boot(): IPty {
-  const pty = spawn(process.execPath, [join(repo, 'src', 'index.ts')], {
-    name: 'xterm-256color',
-    cols: 110,
-    rows: 30,
-    cwd: repo,
-    env: collectEnv({ HOME: home, XDG_RUNTIME_DIR: home, PATH: '/usr/sbin:/usr/bin:/bin' }),
-  });
-
-  pty.onData((d) => {
-    out += d;
-  });
-
-  return pty;
-}
-
-async function waitFor(needle: string, ms = 4000): Promise<void> {
-  const start = Date.now();
-
-  while (Date.now() - start < ms) {
-    if (out.includes(needle)) {
-      return;
-    }
-
-    await Bun.sleep(50);
-  }
-
-  throw new Error(
-    `timed out waiting for ${JSON.stringify(needle)}; tail: ${JSON.stringify(out.slice(-400))}`,
-  );
-}
-
-async function spawnSession(pty: IPty, name: string) {
+async function spawnSession(ctx: TestContext, pty: IPty, name: string) {
   pty.write('n');
 
-  await waitFor('spawn: directory');
+  await ctx.waitFor('spawn: directory');
 
   pty.write('\r');
 
-  await waitFor('spawn: name');
+  await ctx.waitFor('spawn: name');
 
-  out = '';
-
+  ctx.reset();
   pty.write(`${name}\r`);
 
-  await waitFor('spawn: initial prompt');
+  await ctx.waitFor('spawn: initial prompt');
 
-  out = '';
-
+  ctx.reset();
   pty.write('\r');
 
-  await waitFor('FAKE_CLAUDE_UP');
+  await ctx.waitFor('FAKE_CLAUDE_UP');
 }
 
-test('spawn, hook status, overlay, kill, quit', async () => {
-  p = boot();
+test('it surfaces a needs-you session in the overlay and kills it on confirm', async () => {
+  await using ctx = setupTest();
 
-  await waitFor('atc — control tower');
-  await spawnSession(p, 'testsess');
+  const pty = ctx.boot();
 
-  expect(out).toContain('--settings');
+  await ctx.waitFor('atc — control tower');
 
-  p.write('\u0000');
+  await spawnSession(ctx, pty, 'testsess');
 
-  await waitFor('NEEDS YOU');
-  await waitFor('need you: testsess'); // overlay-mode status bar
+  expect(ctx.read()).toInclude('--settings');
 
-  p.write('K');
+  pty.write(CTRL_SPACE);
 
-  await waitFor('kill selected session?');
+  await ctx.waitFor('NEEDS YOU');
+  await ctx.waitFor('need you: testsess');
 
-  p.write('y');
+  pty.write('K');
 
-  await Bun.sleep(300);
+  await ctx.waitFor('kill selected session?');
+
+  pty.write('y');
+
+  await Bun.sleep(300); // the kill has no on-screen marker to wait for before quitting
 
   let exited = false;
 
-  p.onExit(() => {
+  pty.onExit(() => {
     exited = true;
   });
 
-  p.write('q');
+  pty.write('q');
 
-  await Bun.sleep(500);
+  await Bun.sleep(500); // quit tears the process down; only the exit event observes it
 
   expect(exited).toBe(true);
 });
 
-test('attaching a needs-you session clears its need state', async () => {
-  p = boot();
+test('it clears the need state when attaching a needy session', async () => {
+  await using ctx = setupTest();
 
-  await waitFor('atc — control tower');
-  await spawnSession(p, 'needytest');
+  const pty = ctx.boot();
 
-  p.write('\u0000');
+  await ctx.waitFor('atc — control tower');
 
-  await waitFor('NEEDS YOU');
+  await spawnSession(ctx, pty, 'needytest');
 
-  p.write('\r'); // attach the selected (needs-you) session
+  pty.write(CTRL_SPACE);
 
-  const statusPath = join(home, '.local', 'state', 'atc', 'status.json');
+  await ctx.waitFor('NEEDS YOU');
+
+  pty.write('\r');
+
+  const statusPath = join(ctx.home, '.local', 'state', 'atc', 'status.json');
   const start = Date.now();
   let cleared = false;
 
@@ -175,95 +201,95 @@ test('attaching a needs-you session clears its need state', async () => {
   expect(cleared).toBe(true);
 });
 
-test('overlay slash filter narrows the session list', async () => {
-  p = boot();
+test('it narrows the overlay to sessions matching the slash filter', async () => {
+  await using ctx = setupTest();
 
-  await waitFor('atc — control tower');
-  await spawnSession(p, 'alpha');
+  const pty = ctx.boot();
 
-  p.write('\u0000');
+  await ctx.waitFor('atc — control tower');
 
-  await waitFor('NEEDS YOU');
+  await spawnSession(ctx, pty, 'alpha');
 
-  p.write('\r'); // attach alpha, clearing its needs-you state
+  pty.write(CTRL_SPACE);
 
-  await Bun.sleep(200);
+  await ctx.waitFor('NEEDS YOU');
 
-  out = '';
+  pty.write('\r'); // attach alpha so it stops being the urgent session in the status bar
 
-  p.write('\u0000');
+  await Bun.sleep(200); // the attach repaint has no unique marker to wait for
 
-  await waitFor('sessions');
+  ctx.reset();
+  pty.write(CTRL_SPACE);
 
-  p.write('n'); // spawn second session from the overlay
+  await ctx.waitFor('sessions');
 
-  await waitFor('spawn: directory');
+  pty.write('n');
 
-  p.write('\r');
+  await ctx.waitFor('spawn: directory');
 
-  await waitFor('spawn: name');
+  pty.write('\r');
 
-  p.write('bravo\r');
+  await ctx.waitFor('spawn: name');
 
-  await waitFor('spawn: initial prompt');
+  pty.write('bravo\r');
 
-  p.write('\r');
+  await ctx.waitFor('spawn: initial prompt');
 
-  await waitFor('FAKE_CLAUDE_UP');
+  pty.write('\r');
 
-  out = '';
+  await ctx.waitFor('FAKE_CLAUDE_UP');
 
-  p.write('\u0000');
+  ctx.reset();
+  pty.write(CTRL_SPACE);
 
-  await waitFor('bravo');
+  await ctx.waitFor('bravo');
 
-  p.write('/');
+  pty.write('/');
 
-  await waitFor('type to filter');
+  await ctx.waitFor('type to filter');
 
-  out = '';
+  ctx.reset();
+  pty.write('brav');
 
-  p.write('brav');
+  await ctx.waitFor('/ brav');
+  await ctx.waitFor('bravo');
 
-  await waitFor('/ brav');
-  await waitFor('bravo');
-
-  expect(out).not.toContain('alpha ');
+  expect(ctx.read()).not.toInclude('alpha ');
 });
 
-test('adopt passes --resume and yank copies resume command', async () => {
-  p = boot();
+test('it adopts a session with --resume and yanks its resume command', async () => {
+  await using ctx = setupTest();
 
-  await waitFor('adopt an existing session');
+  const pty = ctx.boot();
 
-  p.write('r');
+  await ctx.waitFor('adopt an existing session');
 
-  await waitFor('adopt: directory');
+  pty.write('r');
 
-  p.write('\r');
+  await ctx.waitFor('adopt: directory');
 
-  await waitFor('adopt: name');
+  pty.write('\r');
 
-  out = '';
+  await ctx.waitFor('adopt: name');
 
-  p.write('adopted\r');
+  ctx.reset();
+  pty.write('adopted\r');
 
-  await waitFor('FAKE_CLAUDE_UP');
+  await ctx.waitFor('FAKE_CLAUDE_UP');
 
-  expect(out).toContain('--resume');
+  expect(ctx.read()).toInclude('--resume');
 
-  p.write('\u0000');
+  pty.write(CTRL_SPACE);
 
-  await waitFor('need you: adopted');
-  await waitFor('y yank');
+  await ctx.waitFor('need you: adopted');
+  await ctx.waitFor('y yank');
 
-  out = '';
+  ctx.reset();
+  pty.write('y');
 
-  p.write('y');
+  await ctx.waitFor('resume cmd copied');
 
-  await waitFor('resume cmd copied');
-
-  const b64 = out.split(']52;c;')[1]?.split('\u0007')[0];
+  const b64 = ctx.read().split(']52;c;')[1]?.split(BEL)[0];
 
   if (b64 === undefined) {
     throw new Error('no OSC52 sequence in output');
@@ -271,41 +297,45 @@ test('adopt passes --resume and yank copies resume command', async () => {
 
   const cmd = Buffer.from(b64, 'base64').toString();
 
-  expect(cmd).toContain('claude --resume fake-1');
-  expect(cmd.startsWith("cd '")).toBe(true);
+  expect(cmd).toInclude('claude --resume fake-1');
+  expect(cmd).toStartWith("cd '");
 });
 
-test('statusline chains user command and appends fleet segment', async () => {
-  mkdirSync(join(home, '.claude'), { recursive: true });
+test('it chains the user statusline and appends the fleet segment', async () => {
+  await using ctx = setupTest();
+
+  mkdirSync(join(ctx.home, '.claude'), { recursive: true });
 
   writeFileSync(
-    join(home, '.claude', 'settings.json'),
+    join(ctx.home, '.claude', 'settings.json'),
     JSON.stringify({ statusLine: { type: 'command', command: 'echo CHAINED-SEGMENT' } }),
   );
 
-  mkdirSync(join(home, '.local', 'state', 'atc'), { recursive: true });
+  mkdirSync(join(ctx.home, '.local', 'state', 'atc'), { recursive: true });
 
   writeFileSync(
-    join(home, '.local', 'state', 'atc', 'status.json'),
+    join(ctx.home, '.local', 'state', 'atc', 'status.json'),
     JSON.stringify({ needs_you: 2, running: 1, done: 0, exited: 0, urgent: 'auth-bug' }),
   );
 
   const proc = Bun.spawn([process.execPath, join(repo, 'src', 'statusline.ts')], {
     stdin: new TextEncoder().encode(JSON.stringify({ session_id: 'sl-1' })),
-    env: collectEnv({ HOME: home, PATH: '/usr/sbin:/usr/bin:/bin' }),
+    env: collectEnv({ HOME: ctx.home, PATH: '/usr/sbin:/usr/bin:/bin' }),
     stdout: 'pipe',
   });
 
   const line = await new Response(proc.stdout).text();
 
-  expect(line).toContain('CHAINED-SEGMENT');
-  expect(line).toContain('2 need you: auth-bug');
-  expect(line).toContain('◐ 1');
+  expect(line).toInclude('CHAINED-SEGMENT');
+  expect(line).toInclude('2 need you: auth-bug');
+  expect(line).toInclude('◐ 1');
 });
 
-test('session name pulled from claude transcript custom-title', async () => {
+test('it renames a session from the claude transcript custom-title', async () => {
+  await using ctx = setupTest();
+
   writeFileSync(
-    join(home, 'fake-transcript.jsonl'),
+    join(ctx.home, 'fake-transcript.jsonl'),
     `${JSON.stringify({
       type: 'custom-title',
       customTitle: 'claude-named',
@@ -313,25 +343,27 @@ test('session name pulled from claude transcript custom-title', async () => {
     })}\n`,
   );
 
-  p = boot();
+  const pty = ctx.boot();
 
-  await waitFor('atc — control tower');
-  await spawnSession(p, 'typedname');
+  await ctx.waitFor('atc — control tower');
 
-  p.write('\u0000');
+  await spawnSession(ctx, pty, 'typedname');
 
-  await waitFor('claude-named'); // /rename in claude overrides even a typed atc name
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('claude-named');
 });
 
-test('fleet survives crash and restores with recorded id', async () => {
-  p = boot();
+test('it restores the fleet from disk after a crash', async () => {
+  await using ctx = setupTest();
 
-  await waitFor('atc — control tower');
-  await spawnSession(p, 'fleettest');
+  const pty = ctx.boot();
 
-  // SessionStart alone must be enough to enter the fleet — no interaction,
-  // no notification required.
-  const fleetFile = Bun.file(join(home, '.local', 'state', 'atc', 'fleet.json'));
+  await ctx.waitFor('atc — control tower');
+
+  await spawnSession(ctx, pty, 'fleettest');
+
+  const fleetFile = Bun.file(join(ctx.home, '.local', 'state', 'atc', 'fleet.json'));
   const start = Date.now();
   let fleet: unknown[] = [];
 
@@ -353,21 +385,21 @@ test('fleet survives crash and restores with recorded id', async () => {
     await Bun.sleep(50);
   }
 
-  p.kill(); // simulate atc crash
+  pty.kill(); // simulate an atc crash; fleet.json must survive it
 
-  await Bun.sleep(300);
+  await Bun.sleep(300); // let the killed process release its pty before rebooting
 
-  expect(fleet).toEqual([{ name: 'fleettest', cwd: home, claudeId: 'fake-1' }]);
+  expect(fleet).toStrictEqual([{ name: 'fleettest', cwd: ctx.home, claudeId: 'fake-1' }]);
 
-  out = '';
-  p = boot();
+  ctx.reset();
 
-  await waitFor('restore last fleet (1 sessions)');
+  const rebooted = ctx.boot();
 
-  out = '';
+  await ctx.waitFor('restore last fleet (1 sessions)');
 
-  p.write('R');
+  ctx.reset();
+  rebooted.write('R');
 
-  await waitFor('FAKE_CLAUDE_UP');
-  await waitFor('--resume fake-1');
+  await ctx.waitFor('FAKE_CLAUDE_UP');
+  await ctx.waitFor('--resume fake-1');
 });

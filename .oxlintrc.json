@@ -58,7 +58,8 @@
           { "from": "file", "name": "Config" },
           { "from": "file", "name": "HookEvent" },
           { "from": "file", "name": "OverlayView" },
-          { "from": "file", "name": "PickerView" }
+          { "from": "file", "name": "PickerView" },
+          { "from": "file", "name": "TestContext" }
         ]
       }
     ],

@@ -7,7 +7,7 @@ not window management.
 
 ## Process model
 
-```
+```text
 terminal ──> atc (src/index.ts)
               ├── PTY per session ──> claude --settings <generated>
               ├── unix socket server (hook + statusline reports)
