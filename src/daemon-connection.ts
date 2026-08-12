@@ -27,7 +27,6 @@ export interface DaemonContext {
   readonly ackSession: (id: string) => boolean;
   readonly buildResumeCommand: (id: string) => string | null;
   readonly answerPermission: (request: string, decision: string) => AnswerResult;
-  readonly loadBrief: () => Promise<string>;
   readonly restoreFleet: (cols: number, rows: number) => number;
   readonly attachSession: (
     client: OutputClient,
@@ -201,11 +200,6 @@ export class DaemonConnection {
       }
       case 'dirs.list': {
         this.sendOk(req.id, { dirs: this.ctx.collectSpawnDirs() });
-
-        return;
-      }
-      case 'fleet.brief': {
-        void this.applyBrief(req.id);
 
         return;
       }
@@ -438,18 +432,6 @@ export class DaemonConnection {
     }
 
     this.sendOk(req.id, {});
-  }
-
-  private async applyBrief(id: number): Promise<void> {
-    try {
-      const brief = await this.ctx.loadBrief();
-
-      this.sendOk(id, { brief });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-
-      this.sendErr(id, 'internal', `brief unavailable: ${msg}`);
-    }
   }
 
   private applyPermissionRespond(req: RequestMsg): void {

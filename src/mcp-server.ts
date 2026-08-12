@@ -86,12 +86,6 @@ const TOOLS: readonly MCPTool[] = [
     inputSchema: SESSION_INPUT,
   },
   {
-    name: 'atc_fleet_brief',
-    description:
-      'A short human-readable brief of the whole fleet: which sessions need attention and why, what finished, what is still running.',
-    inputSchema: NO_INPUT,
-  },
-  {
     name: 'atc_dirs_list',
     description: 'List directories sessions were previously spawned from, most recent first.',
     inputSchema: NO_INPUT,
@@ -257,11 +251,6 @@ async function runTool(
       const ok = await client.sendRequest('session.resumeCommand', { session: args['session'] });
 
       return typeof ok['command'] === 'string' ? ok['command'] : JSON.stringify(ok);
-    }
-    case 'atc_fleet_brief': {
-      const ok = await client.sendRequest('fleet.brief');
-
-      return typeof ok['brief'] === 'string' ? ok['brief'] : JSON.stringify(ok);
     }
     case 'atc_dirs_list': {
       const ok = await client.sendRequest('dirs.list');

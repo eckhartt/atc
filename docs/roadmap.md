@@ -61,9 +61,9 @@ Status: done
 
 Build order:
 
-1. Inbox intelligence: an on-demand fleet brief — the daemon summarizes what every session did and
-   which ones actually need a human, rendered in the client on a keypress. Uses the Messages API
-   directly; the raw material is session state plus each session's last reported activity.
+1. Inbox intelligence: an on-demand fleet brief rendered in the client on a keypress. Shipped, then
+   removed — the statusline and overlay already carry the needs-you signal, and the brief dragged an
+   API-key requirement into the daemon for a screen nobody opened.
 2. MCP exposure: `atc mcp` bridges stdio to the daemon protocol so any MCP client — including a
    wrangled session — can list, spawn, and drive the fleet. Issue dispatch then needs no feature at
    all: it is a session looping over an issue source and calling the spawn tool.

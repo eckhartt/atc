@@ -18,7 +18,7 @@ const idleAdapter: AgentAdapter = {
   buildResumeCommand: () => null,
 };
 
-function setupDaemon(briefLoader?: () => Promise<string>): string {
+function setupDaemon(): string {
   const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
   const sockPath = join(dir, 'daemon.sock');
 
@@ -28,7 +28,6 @@ function setupDaemon(briefLoader?: () => Promise<string>): string {
     build: 'atc/test-build',
     adapter: idleAdapter,
     dbPath: join(dir, 'state.db'),
-    ...(briefLoader === undefined ? {} : { briefLoader }),
   });
 
   onTestFinished(() => {
@@ -40,8 +39,8 @@ function setupDaemon(briefLoader?: () => Promise<string>): string {
   return sockPath;
 }
 
-async function setupClient(briefLoader?: () => Promise<string>): Promise<DaemonClient> {
-  const client = await DaemonClient.open(setupDaemon(briefLoader));
+async function setupClient(): Promise<DaemonClient> {
+  const client = await DaemonClient.open(setupDaemon());
 
   onTestFinished(() => {
     client.stop();
@@ -280,56 +279,4 @@ test('it connects nothing on a socket path with no daemon', () => {
   });
 
   expect(attempt).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-test('it answers fleet.brief from the injected loader', async () => {
-  const client = await setupClient(() => Promise.resolve('all quiet.'));
-
-  await client.sendHello('atc/test-build');
-
-  const answer = await client.sendRequest('fleet.brief');
-
-  expect(answer).toStrictEqual({ brief: 'all quiet.' });
-});
-
-test('it reports briefing as unavailable when no loader is configured', async () => {
-  const client = await setupClient();
-
-  await client.sendHello('atc/test-build');
-
-  expect(client.sendRequest('fleet.brief')).rejects.toMatchObject({
-    code: 'internal',
-    message: 'brief unavailable: no brief loader is configured',
-  });
-});
-
-test('it serves a repeat fleet.brief from cache without reloading', async () => {
-  let calls = 0;
-
-  const client = await setupClient(() => {
-    calls++;
-
-    return Promise.resolve('all quiet.');
-  });
-
-  await client.sendHello('atc/test-build');
-  await client.sendRequest('fleet.brief');
-  await client.sendRequest('fleet.brief');
-
-  expect(calls).toBe(1);
-});
-
-test('it reports a failed brief as unavailable without disconnecting', async () => {
-  const client = await setupClient(() => Promise.reject(new Error('no credentials')));
-
-  await client.sendHello('atc/test-build');
-
-  expect(client.sendRequest('fleet.brief')).rejects.toMatchObject({
-    code: 'internal',
-    message: 'brief unavailable: no credentials',
-  });
-
-  const pong = await client.sendRequest('daemon.ping');
-
-  expect(pong).toStrictEqual({});
 });

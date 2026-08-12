@@ -5,23 +5,12 @@ import type { EventMsg } from './protocol';
 import { isRecord } from './report';
 import { countSessionStates, sortSessionViews } from './sessions';
 import type { SessionState } from './sessions';
-import {
-  ansi,
-  cols,
-  drawBrief,
-  drawHelp,
-  drawHome,
-  drawOverlay,
-  drawPicker,
-  drawStatusBar,
-  rows,
-} from './ui';
+import { ansi, cols, drawHelp, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } from './ui';
 
 type Mode =
   | 'home'
   | 'attached'
   | 'overlay'
-  | 'brief'
   | 'help'
   | 'picker-dir'
   | 'picker-name'
@@ -144,7 +133,6 @@ function toBase() {
   scheduleStatus();
 }
 
-let briefLines: string[] = ['briefing…'];
 let ejectTarget = '';
 
 async function yankToHeadless(instruction: string) {
@@ -181,31 +169,6 @@ function recordActionFailure(id: string, error: unknown) {
   }
 }
 
-async function openBrief() {
-  mode = 'brief';
-  briefLines = ['briefing…'];
-
-  stdout.write(ansi.clear);
-
-  drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
-
-  try {
-    const answer = await client.sendRequest('fleet.brief');
-
-    const brief = answer['brief'];
-
-    briefLines = typeof brief === 'string' ? brief.split('\n') : ['brief came back empty'];
-  } catch (error) {
-    briefLines = [error instanceof Error ? error.message : String(error)];
-  }
-
-  if (mode === 'brief') {
-    stdout.write(ansi.clear);
-
-    drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
-  }
-}
-
 function openHelp() {
   mode = 'help';
 
@@ -218,20 +181,6 @@ function applyHelpKey(buf: Buffer) {
   const ch = buf.toString();
 
   if (buf[0] === KEY.esc || ch === '?' || ch === 'q' || buf[0] === KEY.ctrlSpace) {
-    openOverlay();
-  }
-}
-
-function applyBriefKey(buf: Buffer) {
-  const ch = buf.toString();
-
-  if (ch === 'r') {
-    void openBrief();
-
-    return;
-  }
-
-  if (buf[0] === KEY.esc || ch === 'b' || buf[0] === KEY.ctrlSpace || ch === 'q') {
     openOverlay();
   }
 }
@@ -727,12 +676,6 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
-  if (ch === 'b') {
-    void openBrief();
-
-    return;
-  }
-
   if (ch === '?') {
     openHelp();
 
@@ -984,11 +927,6 @@ process.stdin.on('data', (buf: Buffer) => {
 
       return;
     }
-    case 'brief': {
-      applyBriefKey(buf);
-
-      return;
-    }
     case 'help': {
       applyHelpKey(buf);
 
@@ -1103,12 +1041,6 @@ stdout.on('resize', () => {
     stdout.write(ansi.clear);
 
     renderOverlay();
-  }
-
-  if (mode === 'brief') {
-    stdout.write(ansi.clear);
-
-    drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
   }
 
   if (mode.startsWith('picker')) {

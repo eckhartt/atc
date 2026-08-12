@@ -211,7 +211,7 @@ export function drawOverlay(view: OverlayView) {
   drawBox(rowsList);
 }
 
-const GLOBAL_HINT = 'n new · b brief · ? keys';
+const GLOBAL_HINT = 'n new · ? keys';
 
 // Only the actions valid for the selected row appear; the full reference
 // lives behind ?.
@@ -256,7 +256,6 @@ export function drawHelp() {
     'K  kill (K again on a dead session forgets it)',
     'n  new session',
     'r  adopt an external session',
-    'b  fleet brief',
     '/  filter · ↑↓/jk move · q quit',
   ];
 
@@ -269,54 +268,6 @@ export function drawHelp() {
   rowsList.push(boxDivider(width), dimRow(width, 'esc/? back'), boxBottom(width));
 
   drawBox(rowsList);
-}
-
-export interface BriefView {
-  readonly lines: readonly string[];
-  readonly hint: string;
-}
-
-export function drawBrief(view: BriefView) {
-  const width = Math.min(cols() - 4, 100);
-  const rowsList: Row[] = [boxTop(width, 'fleet brief')];
-
-  for (const line of view.lines.length === 0 ? ['(nothing to report)'] : view.lines) {
-    const wrapped = splitToWidth(line, width - 4);
-
-    for (const part of wrapped) {
-      rowsList.push(boxRow(width, part, part.length));
-    }
-  }
-
-  rowsList.push(boxDivider(width), dimRow(width, view.hint), boxBottom(width));
-
-  drawBox(rowsList);
-}
-
-function splitToWidth(line: string, max: number): string[] {
-  const clean = truncate(line, Number.MAX_SAFE_INTEGER);
-
-  if (clean.length <= max) {
-    return [clean];
-  }
-
-  const parts: string[] = [];
-  let rest = clean;
-
-  while (rest.length > max) {
-    const cut = rest.lastIndexOf(' ', max);
-    const at = cut > max / 2 ? cut : max;
-
-    parts.push(rest.slice(0, at));
-
-    rest = rest.slice(at).trimStart();
-  }
-
-  if (rest !== '') {
-    parts.push(rest);
-  }
-
-  return parts;
 }
 
 export interface PickerView {

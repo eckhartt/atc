@@ -35,11 +35,6 @@ export interface DaemonOptions {
   // Outbound queue capacity per client; small values force desync in tests.
   readonly queueBytes?: number;
 
-  // Turns the fleet's descriptors into a fleet brief; the real one makes a
-  // Messages API call. Injectable because the network is a boundary tests
-  // never cross; absent means briefing is unsupported.
-  readonly briefLoader?: (sessions: readonly SessionDescriptor[]) => Promise<string>;
-
   // Runs one headless turn over a session; the real one drives the Agent
   // SDK, which spawns real claude — a boundary tests never cross. Absent
   // means eject is unsupported.
@@ -102,46 +97,6 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   };
 
   const registry = new PermissionRegistry();
-
-  // The brief is cached against a fleet revision that ticks on every
-  // session event, so repeat requests are free until something changes.
-  let fleetRev = 0;
-  let briefCache: { rev: number; text: string } | null = null;
-  let briefInflight: { rev: number; promise: Promise<string> } | null = null;
-
-  const loadBrief = async (): Promise<string> => {
-    const briefLoader = opts.briefLoader;
-
-    if (briefLoader === undefined) {
-      throw new Error('no brief loader is configured');
-    }
-
-    const rev = fleetRev;
-
-    if (briefCache !== null && briefCache.rev === rev) {
-      return briefCache.text;
-    }
-
-    if (briefInflight !== null && briefInflight.rev === rev) {
-      return briefInflight.promise;
-    }
-
-    const promise = (async () => {
-      const text = await briefLoader(mgr.collectDescriptors());
-
-      briefCache = { rev, text };
-
-      return text;
-    })();
-
-    briefInflight = { rev, promise };
-
-    try {
-      return await promise;
-    } finally {
-      briefInflight = null;
-    }
-  };
 
   registry.onRequested = (req) => {
     emitEvent({
@@ -382,8 +337,6 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   };
 
   mgr.onEvent = (kind, s) => {
-    fleetRev++;
-
     recordAttention(kind, s);
 
     if (kind === 'removed') {
@@ -528,7 +481,6 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     },
     buildResumeCommand: (id) => mgr.buildResumeCommand(id),
     answerPermission: (request, decision) => registry.answer(request, decision),
-    loadBrief,
     attachSession: (client, sessionID, dims) => {
       const s = mgr.sessions.find((x) => x.id === sessionID);
 
