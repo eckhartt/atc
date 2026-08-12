@@ -26,13 +26,13 @@ export function logEvent(e: HookEvent) {
   } catch {}
 }
 
-export function startHookServer(onEvent: (e: HookEvent) => void) {
+export function startHookServer(onEvent: (e: HookEvent) => void, path: string = socketPath) {
   try {
-    unlinkSync(socketPath);
+    unlinkSync(path);
   } catch {}
 
   return Bun.listen<string>({
-    unix: socketPath,
+    unix: path,
     socket: {
       data(socket, buf) {
         const buffered = (socket.data ?? '') + buf.toString();

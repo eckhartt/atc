@@ -2,19 +2,59 @@ import { expect, onTestFinished, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentAdapter } from './agent-adapter';
 import { startDaemon } from './daemon';
+import { DaemonClient } from './daemon-client';
 import { OutboundQueue } from './outbound-queue';
 
-interface TestClient {
+// Protocol-level tests only: nothing here spawns a session, so the manager
+// never writes state files. Session behavior runs against a daemon
+// subprocess with an isolated HOME in test/daemon-e2e.test.ts.
+const idleAdapter: AgentAdapter = {
+  planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
+  normalizeHook: () => ({ kind: 'heartbeat' }),
+  loadName: () => Promise.resolve(null),
+  buildResumeCommand: () => null,
+};
+
+function setupDaemon(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
+  const sockPath = join(dir, 'daemon.sock');
+
+  const daemon = startDaemon({
+    socketPath: sockPath,
+    reporterSocketPath: join(dir, 'reporter.sock'),
+    build: 'atc/test-build',
+    adapter: idleAdapter,
+  });
+
+  onTestFinished(() => {
+    daemon.stop();
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  return sockPath;
+}
+
+async function setupClient(): Promise<DaemonClient> {
+  const client = await DaemonClient.open(setupDaemon());
+
+  onTestFinished(() => {
+    client.stop();
+  });
+
+  return client;
+}
+
+interface RawClient {
   readonly sendLine: (line: string) => void;
   readonly waitForLine: (count?: number) => Promise<string[]>;
   readonly waitForClose: () => Promise<void>;
 }
 
-async function setupClient(): Promise<TestClient> {
-  const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
-  const sockPath = join(dir, 'daemon.sock');
-  const server = startDaemon({ socketPath: sockPath, build: 'atc/test-build' });
+async function setupRawClient(): Promise<RawClient> {
+  const sockPath = setupDaemon();
   const lines: string[] = [];
   let buffer = '';
   let queue: OutboundQueue | null = null;
@@ -46,9 +86,6 @@ async function setupClient(): Promise<TestClient> {
 
   onTestFinished(() => {
     socket.end();
-    server.stop(true);
-
-    rmSync(dir, { recursive: true, force: true });
   });
 
   return {
@@ -74,28 +111,20 @@ async function setupClient(): Promise<TestClient> {
 
 test('it answers daemon.hello with the build and limits', async () => {
   const client = await setupClient();
+  const ok = await client.sendHello('atc/test-build');
 
-  client.sendLine('{"v":1,"id":1,"m":"daemon.hello","p":{"client":"atc/test-build"}}');
-
-  const [line] = await client.waitForLine();
-
-  if (line === undefined) {
-    throw new Error('no response line');
-  }
-
-  expect(JSON.parse(line)).toStrictEqual({
-    v: 1,
-    id: 1,
-    ok: { daemon: 'atc/test-build', limits: { maxLine: 1_048_576, maxChunk: 65_536 } },
+  expect(ok).toStrictEqual({
+    daemon: 'atc/test-build',
+    limits: { maxLine: 1_048_576, maxChunk: 65_536 },
   });
 });
 
 test('it rejects a protocol version mismatch naming both builds', async () => {
-  const client = await setupClient();
+  const raw = await setupRawClient();
 
-  client.sendLine('{"v":2,"id":1,"m":"daemon.hello","p":{"client":"atc/newer-build"}}');
+  raw.sendLine('{"v":2,"id":1,"m":"daemon.hello","p":{"client":"atc/newer-build"}}');
 
-  const [line] = await client.waitForLine();
+  const [line] = await raw.waitForLine();
 
   if (line === undefined) {
     throw new Error('no response line');
@@ -116,64 +145,43 @@ test('it rejects a protocol version mismatch naming both builds', async () => {
     },
   });
 
-  await client.waitForClose();
+  await raw.waitForClose();
 });
 
 test('it answers daemon.ping after the handshake', async () => {
   const client = await setupClient();
 
-  client.sendLine('{"v":1,"id":1,"m":"daemon.hello","p":{"client":"atc/test-build"}}');
-  client.sendLine('{"v":1,"id":2,"m":"daemon.ping"}');
+  await client.sendHello('atc/test-build');
 
-  const lines = await client.waitForLine(2);
+  const pong = await client.sendRequest('daemon.ping');
 
-  expect(JSON.parse(lines[1] ?? '')).toStrictEqual({ v: 1, id: 2, ok: {} });
+  expect(pong).toStrictEqual({});
 });
 
-test('it refuses any request before daemon.hello and closes', async () => {
+test('it refuses any request before daemon.hello', async () => {
   const client = await setupClient();
 
-  client.sendLine('{"v":1,"id":1,"m":"daemon.ping"}');
-
-  const [line] = await client.waitForLine();
-
-  if (line === undefined) {
-    throw new Error('no response line');
-  }
-
-  expect(JSON.parse(line)).toStrictEqual({
-    v: 1,
-    id: 1,
-    err: { code: 'unauthorized', msg: 'daemon.hello must be the first request' },
-  });
-
-  await client.waitForClose();
+  expect(client.sendRequest('daemon.ping')).rejects.toMatchObject({ code: 'unauthorized' });
 });
 
 test('it answers an unknown method with unknown_method and stays connected', async () => {
   const client = await setupClient();
 
-  client.sendLine('{"v":1,"id":1,"m":"daemon.hello","p":{"client":"atc/test-build"}}');
-  client.sendLine('{"v":1,"id":2,"m":"session.levitate"}');
-  client.sendLine('{"v":1,"id":3,"m":"daemon.ping"}');
+  await client.sendHello('atc/test-build');
 
-  const lines = await client.waitForLine(3);
+  expect(client.sendRequest('session.levitate')).rejects.toMatchObject({ code: 'unknown_method' });
 
-  expect(JSON.parse(lines[1] ?? '')).toStrictEqual({
-    v: 1,
-    id: 2,
-    err: { code: 'unknown_method', msg: "unknown method 'session.levitate'" },
-  });
+  const pong = await client.sendRequest('daemon.ping');
 
-  expect(JSON.parse(lines[2] ?? '')).toStrictEqual({ v: 1, id: 3, ok: {} });
+  expect(pong).toStrictEqual({});
 });
 
 test('it closes the connection on a malformed line', async () => {
-  const client = await setupClient();
+  const raw = await setupRawClient();
 
-  client.sendLine('this is not json');
+  raw.sendLine('this is not json');
 
-  const [line] = await client.waitForLine();
+  const [line] = await raw.waitForLine();
 
   if (line === undefined) {
     throw new Error('no response line');
@@ -185,15 +193,15 @@ test('it closes the connection on a malformed line', async () => {
     err: { code: 'bad_args', msg: 'malformed line: not valid JSON' },
   });
 
-  await client.waitForClose();
+  await raw.waitForClose();
 });
 
 test('it closes the connection on an oversized line', async () => {
-  const client = await setupClient();
+  const raw = await setupRawClient();
 
-  client.sendLine(`{"v":1,"id":1,"m":"daemon.hello","p":{"pad":"${'x'.repeat(1_100_000)}"}}`);
+  raw.sendLine(`{"v":1,"id":1,"m":"daemon.hello","p":{"pad":"${'x'.repeat(1_100_000)}"}}`);
 
-  const [line] = await client.waitForLine();
+  const [line] = await raw.waitForLine();
 
   if (line === undefined) {
     throw new Error('no response line');
@@ -205,7 +213,55 @@ test('it closes the connection on an oversized line', async () => {
     err: { code: 'bad_args', msg: 'line exceeds 1048576 bytes' },
   });
 
-  await client.waitForClose();
+  await raw.waitForClose();
+});
+
+test('it lists no sessions on a fresh daemon', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  const list = await client.sendRequest('session.list');
+
+  expect(list).toStrictEqual({ sessions: [] });
+});
+
+test('it answers session.kill for an unknown session with no_such_session', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(client.sendRequest('session.kill', { session: 'nope' })).rejects.toMatchObject({
+    code: 'no_such_session',
+  });
+});
+
+test('it answers session.ack for an unknown session with no_such_session', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(client.sendRequest('session.ack', { session: 'nope' })).rejects.toMatchObject({
+    code: 'no_such_session',
+  });
+});
+
+test('it answers session.resumeCommand for an unknown session with no_such_session', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(client.sendRequest('session.resumeCommand', { session: 'nope' })).rejects.toMatchObject({
+    code: 'no_such_session',
+  });
+});
+
+test('it rejects session.spawn without a cwd as bad_args', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(client.sendRequest('session.spawn', {})).rejects.toMatchObject({ code: 'bad_args' });
 });
 
 test('it connects nothing on a socket path with no daemon', () => {

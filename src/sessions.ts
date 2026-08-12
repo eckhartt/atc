@@ -9,6 +9,24 @@ import { isRecord } from './report';
 
 export type SessionState = 'running' | 'needs_you' | 'done' | 'exited';
 
+export type SessionEventKind = 'added' | 'state' | 'renamed' | 'removed';
+
+// The over-the-wire view of a session: everything but the PTY handle, plus
+// the surface kind.
+export interface SessionDescriptor {
+  readonly id: string;
+  readonly name: string;
+  readonly cwd: string;
+  readonly state: SessionState;
+  readonly unread: boolean;
+  readonly lastMsg: string;
+  readonly claudeId?: string;
+  readonly namedBy: 'user' | 'auto' | 'agent';
+  readonly createdAt: number;
+  readonly kind: 'pty';
+  readonly alive: boolean;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -76,6 +94,8 @@ export class SessionManager {
 
   onChange: () => void = () => {};
 
+  onEvent: (kind: SessionEventKind, s: Session) => void = () => {};
+
   private readonly adapter: AgentAdapter;
 
   constructor(adapter: AgentAdapter) {
@@ -140,14 +160,32 @@ export class SessionManager {
         session.lastMsg = 'process exited';
       }
 
+      this.onEvent('state', session);
       this.emitChange();
     });
 
     this.sessions.push(session);
     this.writeFleet();
     this.writeStatus();
+    this.onEvent('added', session);
 
     return session;
+  }
+
+  collectDescriptors(): SessionDescriptor[] {
+    return this.sessions.map((s) => ({
+      id: s.id,
+      name: s.name,
+      cwd: s.cwd,
+      state: s.state,
+      unread: s.unread,
+      lastMsg: s.lastMsg,
+      ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
+      namedBy: s.namedBy,
+      createdAt: s.createdAt,
+      kind: 'pty',
+      alive: s.pty !== null,
+    }));
   }
 
   applyHook(e: HookEvent) {
@@ -218,6 +256,7 @@ export class SessionManager {
     }
 
     if (dirty) {
+      this.onEvent('state', s);
       this.emitChange();
     }
   }
@@ -236,6 +275,7 @@ export class SessionManager {
     }
 
     this.writeFleet();
+    this.onEvent('renamed', s);
     this.emitChange();
   }
 
@@ -255,6 +295,8 @@ export class SessionManager {
 
     if (s) {
       s.unread = false;
+
+      this.onEvent('state', s);
     }
 
     this.emitChange();
@@ -273,12 +315,16 @@ export class SessionManager {
       s.pty = null;
       s.state = 'exited';
       s.lastMsg = 'killed';
+
+      this.onEvent('state', s);
     } else {
       this.sessions = this.sessions.filter((x) => x.id !== id);
 
       if (this.focusedId === id) {
         this.focusedId = null;
       }
+
+      this.onEvent('removed', s);
     }
 
     this.writeFleet();

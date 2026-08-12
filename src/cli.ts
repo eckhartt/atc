@@ -9,7 +9,19 @@ const main = defineCommand({
     version: pkg.version,
     description: 'Terminal control tower for Claude Code sessions',
   },
+  default: 'tui',
   subCommands: {
+    tui: () =>
+      defineCommand({
+        meta: {
+          name: 'tui',
+          description: 'Open the session list client',
+          hidden: true,
+        },
+        async run() {
+          await import('./index');
+        },
+      }),
     daemon: () =>
       defineCommand({
         meta: {
@@ -19,10 +31,13 @@ const main = defineCommand({
         async run() {
           const daemon = await import('./daemon');
           const config = await import('./config');
+          const claude = await import('./claude-adapter');
 
           daemon.startDaemon({
             socketPath: config.daemonSocketPath,
+            reporterSocketPath: config.socketPath,
             build: `atc/${pkg.version}`,
+            adapter: new claude.ClaudeAdapter(config.loadConfig()),
           });
         },
       }),
@@ -52,13 +67,6 @@ const main = defineCommand({
           await statusline.runStatusline();
         },
       }),
-  },
-  async run(ctx) {
-    if (ctx.subCommand !== undefined) {
-      return;
-    }
-
-    await import('./index');
   },
 });
 
