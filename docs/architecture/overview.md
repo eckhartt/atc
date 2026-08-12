@@ -19,8 +19,9 @@ atc (client TUI) ── NDJSON protocol ──> atcd (atc daemon)
 - Each session is a `claude` child process on its own PTY (`bun-pty`) inside the daemon. Attached
   clients receive the session's output as sequenced events; a slow client desyncs and resynchronizes
   rather than stalling the PTY or other clients.
-- There is no vt screen model yet: attach fidelity relies on Claude Code redrawing itself on
-  SIGWINCH (the resize jiggle). The screen model replaces that in a later phase.
+- A per-session vt state machine (`@xterm/headless`) consumes every PTY byte continuously, so
+  attaching is an instant serialized-screen replay — no resize jiggle, no reliance on the hosted
+  agent repainting itself.
 - `src/sessions.ts` is the state machine: session states are `running`, `needs_you`, `done`,
   `exited`, each with an `unread` attention flag.
 

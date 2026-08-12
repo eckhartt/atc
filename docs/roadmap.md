@@ -40,7 +40,7 @@ Build order inside the phase (sequence matters more than the wire format):
 
 ## Phase 3 — screen model
 
-Status: not started
+Status: done
 
 - Per-session vt state machine (`@xterm/headless`) in the daemon.
 - Attach becomes instant screen replay; the resize-jiggle repaint dies.

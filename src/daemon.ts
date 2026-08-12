@@ -1,17 +1,16 @@
 import { unlinkSync, writeFileSync } from 'node:fs';
-import { basename } from 'node:path';
 import type { AgentAdapter } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
+import { DaemonConnection } from './daemon-connection';
+import type { DaemonContext, OutputClient } from './daemon-connection';
 import { startHookServer } from './hooks';
-import { OutboundQueue } from './outbound-queue';
-import type { SocketWriter } from './outbound-queue';
 import { PermissionRegistry } from './permission-registry';
-import type { AnswerResult } from './permission-registry';
-import { MAX_CHUNK, MAX_LINE, PROTOCOL_V, decodeMessage, encodeMessage } from './protocol';
-import type { ErrorCode, EventMsg, RequestMsg } from './protocol';
+import { MAX_CHUNK, PROTOCOL_V } from './protocol';
+import type { EventMsg } from './protocol';
+import { ScreenModel } from './screen-model';
 import { SessionManager } from './sessions';
-import type { FleetEntry, SessionDescriptor, SessionState } from './sessions';
+import type { SessionDescriptor, SessionState } from './sessions';
 import { StateStore } from './state-store';
 
 export interface DaemonOptions {
@@ -54,7 +53,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
   const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
   const mgr = new SessionManager(opts.adapter, store);
-  const clients = new Set<Connection>();
+  const clients = new Set<DaemonConnection>();
 
   const emitEvent = (event: EventMsg) => {
     for (const client of clients) {
@@ -82,7 +81,32 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const attachments = new AttachRegistry<OutputClient>();
   const seqs = new Map<string, number>();
   const ptyDims = new Map<string, Dims>();
+  const screens = new Map<string, ScreenModel>();
   const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Replay is the serialized screen sent as ordinary output events: the
+  // client cannot tell replay from live and does not need to. A clear leads
+  // so a stale or desynced client screen resets first.
+  const sendReplay = async (sessionID: string, client: OutputClient) => {
+    const model = screens.get(sessionID);
+
+    if (model === undefined) {
+      return;
+    }
+
+    const replay = `\u001B[2J\u001B[H${await model.renderReplay()}`;
+    const seq = seqs.get(sessionID) ?? 0;
+
+    for (let i = 0; i < replay.length; i += MAX_CHUNK) {
+      const chunk = replay.slice(i, i + MAX_CHUNK);
+
+      client.sendOutput(
+        sessionID,
+        { v: PROTOCOL_V, ev: 'session.output', s: sessionID, seq, d: chunk },
+        chunk.length,
+      );
+    }
+  };
 
   const applyEffectiveDims = (sessionID: string) => {
     const dims = attachments.findEffectiveDims(sessionID);
@@ -100,6 +124,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     const s = mgr.sessions.find((x) => x.id === sessionID);
 
     s?.pty?.resize(dims.cols, dims.rows);
+    screens.get(sessionID)?.updateDims(dims.cols, dims.rows);
     ptyDims.set(sessionID, dims);
 
     emitEvent({
@@ -128,25 +153,10 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     );
   };
 
-  // A resize down and back up forces a full repaint from the hosted agent;
-  // this is the pre-screen-model replay on attach and desync recovery.
-  const jiggleSession = (sessionID: string) => {
-    const s = mgr.sessions.find((x) => x.id === sessionID);
-
-    if (s === undefined || s.pty === null) {
-      return;
-    }
-
-    const dims = ptyDims.get(sessionID) ?? { cols: 80, rows: 24 };
-
-    s.pty.resize(dims.cols, Math.max(2, dims.rows - 1));
-
-    setTimeout(() => {
-      s.pty?.resize(dims.cols, dims.rows);
-    }, 60);
-  };
-
   mgr.onOutput = (s, data) => {
+    // The screen model consumes every byte continuously — background output
+    // is consumed, not discarded.
+    screens.get(s.id)?.record(data);
     const conns = attachments.collectClients(s.id);
 
     if (conns.length === 0) {
@@ -203,6 +213,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       attachments.removeSession(s.id);
       seqs.delete(s.id);
       ptyDims.delete(s.id);
+      screens.get(s.id)?.stop();
+      screens.delete(s.id);
     }
 
     const builders: Record<typeof kind, () => EventMsg> = {
@@ -245,6 +257,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
 
       ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
+      screens.set(s.id, new ScreenModel(p.cols, p.rows));
       store.recordSpawnDir(p.cwd);
 
       return getDescriptor(mgr, s.id);
@@ -284,7 +297,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       mgr.attach(sessionID);
 
       scheduleResize(sessionID);
-      jiggleSession(sessionID);
+      void sendReplay(sessionID, client);
 
       return 'ok';
     },
@@ -322,7 +335,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
       return true;
     },
-    jiggleSession,
+    resyncClient: sendReplay,
     ...(opts.queueBytes === undefined ? {} : { queueBytes: opts.queueBytes }),
     getEffectiveDims: (sessionID) =>
       attachments.findEffectiveDims(sessionID) ?? ptyDims.get(sessionID) ?? { cols: 80, rows: 24 },
@@ -339,6 +352,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         const s = mgr.spawn(entry.cwd, entry.name, '', cols, rows, entry.claudeId);
 
         ptyDims.set(s.id, { cols, rows });
+        screens.set(s.id, new ScreenModel(cols, rows));
 
         restored++;
       }
@@ -351,11 +365,11 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     unlinkSync(opts.socketPath);
   } catch {}
 
-  const server = Bun.listen<Connection>({
+  const server = Bun.listen<DaemonConnection>({
     unix: opts.socketPath,
     socket: {
       open(socket) {
-        socket.data = new Connection(socket, ctx);
+        socket.data = new DaemonConnection(socket, ctx);
 
         clients.add(socket.data);
       },
@@ -382,6 +396,11 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       server.stop(true);
       reporter.stop(true);
       mgr.killAll();
+
+      for (const model of screens.values()) {
+        model.stop();
+      }
+
       store.stop();
 
       if (opts.pidPath !== undefined) {
@@ -401,431 +420,4 @@ function getDescriptor(mgr: SessionManager, id: string): SessionDescriptor {
   }
 
   return d;
-}
-
-interface SpawnParams {
-  readonly cwd: string;
-  readonly name: string;
-  readonly prompt: string;
-  readonly cols: number;
-  readonly rows: number;
-  readonly resume: boolean | string;
-  readonly namedBy: 'user' | 'auto';
-}
-
-interface DaemonContext {
-  readonly build: string;
-  readonly collectSessions: () => SessionDescriptor[];
-  readonly collectSpawnDirs: () => string[];
-  readonly collectFleet: () => FleetEntry[];
-  readonly spawnSession: (p: SpawnParams) => SessionDescriptor;
-  readonly killSession: (id: string) => boolean;
-  readonly ackSession: (id: string) => boolean;
-  readonly buildResumeCommand: (id: string) => string | null;
-  readonly answerPermission: (request: string, decision: string) => AnswerResult;
-  readonly restoreFleet: (cols: number, rows: number) => number;
-  readonly attachSession: (
-    client: OutputClient,
-    sessionID: string,
-    dims: Dims,
-  ) => 'ok' | 'missing' | 'dead';
-  readonly detachSession: (client: OutputClient, sessionID: string) => void;
-  readonly detachClient: (client: OutputClient) => void;
-  readonly writeSessionInput: (sessionID: string, data: string) => 'ok' | 'missing' | 'dead';
-  readonly resizeSession: (client: OutputClient, sessionID: string, dims: Dims) => boolean;
-  readonly jiggleSession: (sessionID: string) => void;
-  readonly queueBytes?: number;
-  readonly getEffectiveDims: (sessionID: string) => Dims;
-}
-
-// The slice of a connection the attach bookkeeping needs: identity plus the
-// ability to receive output events.
-interface OutputClient {
-  readonly sendOutput: (sessionID: string, event: EventMsg, byteLength: number) => void;
-}
-
-interface PeerSocket extends SocketWriter {
-  readonly end: () => void;
-}
-
-class Connection {
-  private readonly peer: PeerSocket;
-
-  private readonly ctx: DaemonContext;
-
-  private readonly queue: OutboundQueue;
-
-  private buffer = '';
-
-  private helloed = false;
-
-  private readonly desynced = new Map<string, number>();
-
-  constructor(peer: PeerSocket, ctx: DaemonContext) {
-    this.peer = peer;
-    this.ctx = ctx;
-
-    this.queue = new OutboundQueue(peer, ctx.queueBytes);
-  }
-
-  sendEvent(event: EventMsg): void {
-    if (this.helloed && !this.queue.send(encodeMessage(event))) {
-      this.peer.end();
-    }
-  }
-
-  // Output is droppable: an overflow discards this session's backlog for
-  // this client and resynchronizes with a repaint once the queue drains. An
-  // intermediate chunk is never dropped without that resync, because a byte
-  // stream cut mid-escape corrupts the client's terminal state.
-  sendOutput(sessionID: string, event: EventMsg, byteLength: number): void {
-    if (!this.helloed) {
-      return;
-    }
-
-    const dropped = this.desynced.get(sessionID);
-
-    if (dropped !== undefined) {
-      this.desynced.set(sessionID, dropped + byteLength);
-
-      return;
-    }
-
-    if (!this.queue.send(encodeMessage(event))) {
-      this.desynced.set(sessionID, byteLength);
-    }
-  }
-
-  applyChunk(chunk: string): void {
-    const buffered = this.buffer + chunk;
-
-    if (buffered.length > MAX_LINE) {
-      this.sendErr(0, 'bad_args', `line exceeds ${MAX_LINE} bytes`);
-      this.peer.end();
-
-      return;
-    }
-
-    const lines = buffered.split('\n');
-
-    this.buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (line.trim() === '') {
-        continue;
-      }
-
-      if (!this.applyLine(line)) {
-        this.peer.end();
-
-        return;
-      }
-    }
-  }
-
-  drain(): void {
-    this.queue.drain();
-
-    if (this.queue.queuedBytes > 0 || this.desynced.size === 0) {
-      return;
-    }
-
-    for (const [sessionID, dropped] of this.desynced) {
-      this.desynced.delete(sessionID);
-      this.sendEvent({ v: PROTOCOL_V, ev: 'session.desync', s: sessionID, dropped });
-      this.ctx.jiggleSession(sessionID);
-    }
-  }
-
-  // false: the connection is beyond recovery and gets closed.
-  private applyLine(line: string): boolean {
-    const decoded = decodeMessage(line);
-
-    if (decoded.kind === 'malformed') {
-      this.sendErr(0, 'bad_args', `malformed line: ${decoded.reason}`);
-
-      return false;
-    }
-
-    if (decoded.kind !== 'request') {
-      this.sendErr(0, 'bad_args', 'only requests flow client to daemon');
-
-      return false;
-    }
-
-    const req = decoded.msg;
-
-    if (req.m === 'daemon.hello') {
-      return this.applyHello(req);
-    }
-
-    if (!this.helloed) {
-      this.sendErr(req.id, 'unauthorized', 'daemon.hello must be the first request');
-
-      return false;
-    }
-
-    this.applyRequest(req);
-
-    return true;
-  }
-
-  private applyRequest(req: RequestMsg): void {
-    switch (req.m) {
-      case 'daemon.ping': {
-        this.sendOk(req.id, {});
-
-        return;
-      }
-      case 'session.list': {
-        this.sendOk(req.id, { sessions: this.ctx.collectSessions() });
-
-        return;
-      }
-      case 'dirs.list': {
-        this.sendOk(req.id, { dirs: this.ctx.collectSpawnDirs() });
-
-        return;
-      }
-      case 'fleet.list': {
-        this.sendOk(req.id, { fleet: this.ctx.collectFleet() });
-
-        return;
-      }
-      case 'session.spawn': {
-        this.applySpawn(req);
-
-        return;
-      }
-      case 'session.kill': {
-        this.applySessionVerb(req, this.ctx.killSession);
-
-        return;
-      }
-      case 'session.ack': {
-        this.applySessionVerb(req, this.ctx.ackSession);
-
-        return;
-      }
-      case 'session.resumeCommand': {
-        const id = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-        const command = this.ctx.buildResumeCommand(id);
-
-        if (command === null) {
-          this.sendErr(req.id, 'no_such_session', `no session '${id}'`);
-        } else {
-          this.sendOk(req.id, { command });
-        }
-
-        return;
-      }
-      case 'session.attach': {
-        this.applyAttach(req);
-
-        return;
-      }
-      case 'session.detach': {
-        const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-
-        this.ctx.detachSession(this, sessionID);
-        this.sendOk(req.id, {});
-
-        return;
-      }
-      case 'session.input': {
-        this.applyInput(req);
-
-        return;
-      }
-      case 'session.resize': {
-        this.applyResize(req);
-
-        return;
-      }
-      case 'permission.respond': {
-        this.applyPermissionRespond(req);
-
-        return;
-      }
-      case 'fleet.restore': {
-        const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
-        const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
-
-        this.sendOk(req.id, { restored: this.ctx.restoreFleet(cols, rows) });
-
-        return;
-      }
-      default: {
-        this.sendErr(req.id, 'unknown_method', `unknown method '${req.m}'`);
-      }
-    }
-  }
-
-  private applySpawn(req: RequestMsg): void {
-    const cwd = req.p?.['cwd'];
-
-    if (typeof cwd !== 'string' || cwd === '') {
-      this.sendErr(req.id, 'bad_args', 'session.spawn requires a cwd');
-
-      return;
-    }
-
-    const name = typeof req.p?.['name'] === 'string' ? req.p['name'] : '';
-    const rawResume = req.p?.['resume'];
-    let resume: boolean | string = false;
-
-    if (typeof rawResume === 'boolean' || typeof rawResume === 'string') {
-      resume = rawResume;
-    }
-
-    const session = this.ctx.spawnSession({
-      cwd,
-      name: name === '' ? basename(cwd) : name,
-      prompt: typeof req.p?.['prompt'] === 'string' ? req.p['prompt'] : '',
-      cols: typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80,
-      rows: typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24,
-      resume,
-      namedBy: name === '' ? 'auto' : 'user',
-    });
-
-    this.sendOk(req.id, { session });
-  }
-
-  private applyAttach(req: RequestMsg): void {
-    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-    const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
-    const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
-    const result = this.ctx.attachSession(this, sessionID, { cols, rows });
-
-    if (result === 'missing') {
-      this.sendErr(req.id, 'no_such_session', `no session '${sessionID}'`);
-
-      return;
-    }
-
-    if (result === 'dead') {
-      this.sendErr(req.id, 'session_dead', `session '${sessionID}' has no live process`);
-
-      return;
-    }
-
-    const dims = this.ctx.getEffectiveDims(sessionID);
-
-    this.sendOk(req.id, { cols: dims.cols, rows: dims.rows });
-  }
-
-  private applyInput(req: RequestMsg): void {
-    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-    const data = typeof req.p?.['d'] === 'string' ? req.p['d'] : '';
-    const result = this.ctx.writeSessionInput(sessionID, data);
-
-    if (result === 'missing') {
-      this.sendErr(req.id, 'no_such_session', `no session '${sessionID}'`);
-
-      return;
-    }
-
-    if (result === 'dead') {
-      this.sendErr(req.id, 'session_dead', `session '${sessionID}' has no live process`);
-
-      return;
-    }
-
-    this.sendOk(req.id, {});
-  }
-
-  private applyResize(req: RequestMsg): void {
-    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-    const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 0;
-    const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 0;
-
-    if (cols < 1 || rows < 1) {
-      this.sendErr(req.id, 'bad_args', 'session.resize requires positive cols and rows');
-
-      return;
-    }
-
-    if (!this.ctx.resizeSession(this, sessionID, { cols, rows })) {
-      this.sendErr(req.id, 'bad_args', `not attached to session '${sessionID}'`);
-
-      return;
-    }
-
-    this.sendOk(req.id, {});
-  }
-
-  private applyPermissionRespond(req: RequestMsg): void {
-    const request = typeof req.p?.['request'] === 'string' ? req.p['request'] : '';
-    const decision = typeof req.p?.['decision'] === 'string' ? req.p['decision'] : '';
-
-    if (request === '' || decision === '') {
-      this.sendErr(req.id, 'bad_args', 'permission.respond requires a request and a decision');
-
-      return;
-    }
-
-    const result = this.ctx.answerPermission(request, decision);
-
-    switch (result) {
-      case 'ok': {
-        this.sendOk(req.id, {});
-
-        return;
-      }
-      case 'already_answered': {
-        this.sendErr(req.id, 'already_answered', `request '${request}' was already answered`);
-
-        return;
-      }
-      case 'unsupported': {
-        this.sendErr(req.id, 'unsupported', `request '${request}' is answered with keystrokes`);
-
-        return;
-      }
-      case 'unknown': {
-        this.sendErr(req.id, 'bad_args', `unknown permission request '${request}'`);
-      }
-    }
-  }
-
-  private applySessionVerb(req: RequestMsg, verb: (id: string) => boolean): void {
-    const id = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
-
-    if (verb(id)) {
-      this.sendOk(req.id, {});
-    } else {
-      this.sendErr(req.id, 'no_such_session', `no session '${id}'`);
-    }
-  }
-
-  private applyHello(req: RequestMsg): boolean {
-    const client = typeof req.p?.['client'] === 'string' ? req.p['client'] : 'unknown client';
-
-    if (req.v !== PROTOCOL_V) {
-      this.sendErr(
-        req.id,
-        'protocol_mismatch',
-        `${client} speaks protocol v${req.v}, daemon ${this.ctx.build} speaks v${PROTOCOL_V}; restart the daemon so both run the same build`,
-      );
-
-      return false;
-    }
-
-    this.helloed = true;
-
-    this.sendOk(req.id, {
-      daemon: this.ctx.build,
-      limits: { maxLine: MAX_LINE, maxChunk: MAX_CHUNK },
-    });
-
-    return true;
-  }
-
-  private sendOk(id: number, ok: Readonly<Record<string, unknown>>): void {
-    this.queue.send(encodeMessage({ v: PROTOCOL_V, id, ok }));
-  }
-
-  private sendErr(id: number, code: ErrorCode, msg: string): void {
-    this.queue.send(encodeMessage({ v: PROTOCOL_V, id, err: { code, msg } }));
-  }
 }

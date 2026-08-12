@@ -22,6 +22,8 @@
     "prepare": "command -v git > /dev/null 2>&1 && lefthook install --force || true"
   },
   "dependencies": {
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
     "bun-pty": "0.4.10",
     "citty": "0.2.2"
   },
