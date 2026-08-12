@@ -33,6 +33,7 @@ Runs fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space rea
 | `j`/`k`/`↑`/`↓` | overlay/picker | move                                                                                           |
 | `Enter`         | overlay        | attach (auto-acks)                                                                             |
 | `/`             | overlay        | fzf-style filter: type to narrow by name/dir, `⏎` attach top match, `esc` clear                |
+| `a`             | overlay        | ack notification without attaching                                                             |
 | `y`             | overlay        | yank `cd <dir> && claude --resume <id>` to clipboard (OSC 52 + clip.exe/wl-copy/xclip)         |
 | `Y`             | overlay        | eject: yank the resume command, then kill the session here — paste it in any pane to take over |
 | `K`             | overlay        | kill selected (confirm with `y`)                                                               |
