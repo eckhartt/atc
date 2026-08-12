@@ -17,7 +17,7 @@ beforeEach(() => {
     fakeClaude,
     `#!/usr/bin/env bash
 echo "FAKE_CLAUDE_UP args: $@"
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1"}' | "${process.execPath}" "${join(repo, "src", "hook-report.ts")}"
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, "src", "hook-report.ts")}"
 sleep 0.3
 printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, "src", "hook-report.ts")}"
 sleep 30
@@ -143,6 +143,18 @@ test("statusline chains user command and appends fleet segment", async () => {
   expect(line).toContain("CHAINED-SEGMENT");
   expect(line).toContain("2 need you: auth-bug");
   expect(line).toContain("◐ 1");
+});
+
+test("session name pulled from claude transcript custom-title", async () => {
+  writeFileSync(
+    join(home, "fake-transcript.jsonl"),
+    JSON.stringify({ type: "custom-title", customTitle: "claude-named", sessionId: "fake-1" }) + "\n",
+  );
+  p = boot();
+  await waitFor("atc — control tower");
+  await spawnSession("typedname");
+  p.write("\x00");
+  await waitFor("claude-named"); // /rename in claude overrides even a typed atc name
 });
 
 test("fleet survives crash and restores with recorded id", async () => {

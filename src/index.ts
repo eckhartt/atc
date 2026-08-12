@@ -153,7 +153,15 @@ function restoreFleet() {
 function doSpawn(prompt: string) {
   const name = spawnName || basename(spawnDir);
   recordSpawn(spawnDir);
-  const s = mgr.spawn(spawnDir, name, prompt, cols(), ptyRows(), spawnResume);
+  const s = mgr.spawn(
+    spawnDir,
+    name,
+    prompt,
+    cols(),
+    ptyRows(),
+    spawnResume,
+    spawnName ? "user" : "auto",
+  );
   attach(s);
 }
 

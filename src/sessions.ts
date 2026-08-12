@@ -16,6 +16,9 @@ export interface Session {
   unread: boolean;
   lastMsg: string;
   claudeId?: string;
+  // who last named this session: claude /rename beats everything, a
+  // user-typed spawn name beats auto-summaries, defaults track claude.
+  namedBy: "user" | "auto" | "claude";
   createdAt: number;
 }
 
@@ -61,6 +64,7 @@ export class SessionManager {
     cols: number,
     rows: number,
     resume: boolean | string = false,
+    namedBy: "user" | "auto" = "auto",
   ): Session {
     const id = `s${++counter}-${Date.now().toString(36)}`;
     const args = [
@@ -91,6 +95,7 @@ export class SessionManager {
       unread: false,
       lastMsg: prompt || (resume ? "adopting…" : "started"),
       claudeId: typeof resume === "string" ? resume : undefined,
+      namedBy,
       createdAt: Date.now(),
     };
     pty.onData((d) => this.onOutput(session, d));
@@ -118,6 +123,12 @@ export class SessionManager {
       s.claudeId = e.payload.session_id;
       this.saveFleet();
       dirty = true;
+    }
+    if (
+      typeof e.payload.transcript_path === "string" &&
+      ["SessionStart", "UserPromptSubmit", "Stop"].includes(e.event)
+    ) {
+      void this.refreshName(s, e.payload.transcript_path);
     }
     switch (e.event) {
       case "SessionStart":
@@ -153,6 +164,35 @@ export class SessionManager {
       // Statusline heartbeats only matter for the claudeId capture above.
     }
     if (dirty) this.changed();
+  }
+
+  // Claude is the naming authority: /rename writes custom-title lines to the
+  // transcript, auto-summaries write summary lines. Pull the freshest.
+  private async refreshName(s: Session, transcript: string) {
+    try {
+      const proc = Bun.spawn(
+        ["grep", "-E", "\"type\":\"(custom-title|summary)\"", transcript],
+        { stdout: "pipe", stderr: "ignore" },
+      );
+      const text = await new Response(proc.stdout).text();
+      let title: string | undefined;
+      let summary: string | undefined;
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const j = JSON.parse(line);
+          if (j.type === "custom-title" && typeof j.customTitle === "string") title = j.customTitle;
+          if (j.type === "summary" && typeof j.summary === "string") summary = j.summary;
+        } catch {}
+      }
+      const next = title ?? (s.namedBy !== "user" ? summary : undefined);
+      if (next && next !== s.name) {
+        s.name = next;
+        if (title) s.namedBy = "claude";
+        this.saveFleet();
+        this.changed();
+      }
+    } catch {}
   }
 
   // Shell command that re-opens this session outside atc (or anywhere).
