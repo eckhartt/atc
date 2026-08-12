@@ -1,29 +1,11 @@
-import { appendFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
-import { socketPath, stateDir } from './config';
+import { unlinkSync } from 'node:fs';
+import { socketPath } from './config';
 import { isRecord } from './report';
 
 export interface HookEvent {
   atcId: string;
   event: string;
   payload: Record<string, unknown>;
-}
-
-// Debug trail for state-machine issues: one JSON line per received hook event.
-const eventLog = join(stateDir, 'events.log');
-
-export function logEvent(e: HookEvent) {
-  const line = {
-    ts: new Date().toISOString(),
-    atcId: e.atcId,
-    event: e.event,
-    message: e.payload['message'],
-    session_id: e.payload['session_id'],
-  };
-
-  try {
-    appendFileSync(eventLog, `${JSON.stringify(line)}\n`);
-  } catch {}
 }
 
 export function startHookServer(onEvent: (e: HookEvent) => void, path: string = socketPath) {

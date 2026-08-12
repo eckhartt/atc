@@ -1,5 +1,6 @@
+import { Database } from 'bun:sqlite';
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'bun-pty';
@@ -37,14 +38,21 @@ function setupTest(): TestContext {
 
   const fakeClaude = join(home, 'fake-claude');
 
+  // Like real Claude Code, the fake repaints its screen on SIGWINCH — the
+  // attach jiggle depends on exactly that behavior for replay.
   writeFileSync(
     fakeClaude,
     `#!/usr/bin/env bash
-echo "FAKE_CLAUDE_UP args: $@"
+ARGS="$*"
+paint() { echo "FAKE_CLAUDE_UP args: $ARGS"; }
+trap paint WINCH
+paint
 printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
 sleep 0.3
 printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
-sleep 30
+for _ in $(seq 1 300); do
+  if read -t 0.1 -r line; then echo "GOT:$line"; fi
+done
 `,
     { mode: 0o755 },
   );
@@ -102,6 +110,19 @@ sleep 30
 
     [Symbol.asyncDispose]() {
       pty?.kill();
+
+      // The client auto-spawned a daemon inside this test's HOME; its pid
+      // file is how the harness finds and stops it.
+      try {
+        const pid = Number(
+          readFileSync(join(home, '.local', 'state', 'atc', 'daemon.pid'), 'utf8'),
+        );
+
+        if (Number.isInteger(pid) && pid > 1) {
+          process.kill(pid, 'SIGTERM');
+        }
+      } catch {}
+
       rmSync(home, { recursive: true, force: true });
 
       return Promise.resolve();
@@ -254,7 +275,7 @@ test('it narrows the overlay to sessions matching the slash filter', async () =>
   await ctx.waitFor('/ brav');
   await ctx.waitFor('bravo');
 
-  expect(ctx.read()).not.toInclude('alpha ');
+  expect(ctx.read()).not.toInclude('alpha        ');
 });
 
 test('it adopts a session with --resume and yanks its resume command', async () => {
@@ -363,20 +384,18 @@ test('it restores the fleet from disk after a crash', async () => {
 
   await spawnSession(ctx, pty, 'fleettest');
 
-  const fleetFile = Bun.file(join(ctx.home, '.local', 'state', 'atc', 'fleet.json'));
+  const dbPath = join(ctx.home, '.local', 'state', 'atc', 'atc.db');
   const start = Date.now();
   let fleet: unknown[] = [];
 
   while (Date.now() - start < 3000) {
-    const rawFleet = await fleetFile.text().catch(() => '[]');
-
-    let parsed: unknown = [];
-
     try {
-      parsed = JSON.parse(rawFleet);
-    } catch {}
+      const db = new Database(dbPath, { readonly: true });
 
-    fleet = Array.isArray(parsed) ? parsed : [];
+      fleet = db.query('SELECT name, cwd, claude_id AS claudeId FROM fleet').all();
+
+      db.close();
+    } catch {}
 
     if (fleet.length > 0) {
       break;
@@ -385,9 +404,19 @@ test('it restores the fleet from disk after a crash', async () => {
     await Bun.sleep(50);
   }
 
-  pty.kill(); // simulate an atc crash; fleet.json must survive it
+  // Simulate a full crash: client and daemon both die; the fleet row must
+  // survive on disk.
+  pty.kill();
 
-  await Bun.sleep(300); // let the killed process release its pty before rebooting
+  try {
+    const pid = Number(
+      readFileSync(join(ctx.home, '.local', 'state', 'atc', 'daemon.pid'), 'utf8'),
+    );
+
+    process.kill(pid, 'SIGKILL');
+  } catch {}
+
+  await Bun.sleep(300); // let the killed processes release their sockets before rebooting
 
   expect(fleet).toStrictEqual([{ name: 'fleettest', cwd: ctx.home, claudeId: 'fake-1' }]);
 

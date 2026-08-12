@@ -1,5 +1,15 @@
 import { formatDir } from './dirs';
-import type { Session, SessionManager, SessionState } from './sessions';
+import type { SessionState } from './sessions';
+
+// The slice of a session the drawing layer needs; satisfied by both the
+// daemon's sessions and the wire descriptors a client mirrors.
+interface SessionView {
+  readonly name: string;
+  readonly cwd: string;
+  readonly state: SessionState;
+  readonly unread: boolean;
+  readonly lastMsg: string;
+}
 
 const ESC = '\u001B';
 
@@ -52,16 +62,20 @@ export function rows(): number {
   return process.stdout.rows || 24;
 }
 
-export function drawStatusBar(mgr: SessionManager) {
-  const c = mgr.countStates();
+export interface StatusView {
+  readonly counts: Readonly<Record<SessionState, number>>;
+  readonly focusedName: string | null;
+  readonly urgentName: string | null;
+}
+
+export function drawStatusBar(view: StatusView) {
+  const c = view.counts;
   const width = cols();
-  const focused = mgr.focused;
-  const urgent = mgr.sortSessions().find((s) => s.state === 'needs_you');
-  const left = ` atc ▏${focused === null ? 'no session' : focused.name} `;
+  const left = ` atc ▏${view.focusedName ?? 'no session'} `;
   const parts: string[] = [];
 
   if (c.needs_you > 0) {
-    const who = urgent === undefined ? '' : `: ${urgent.name}`;
+    const who = view.urgentName === null ? '' : `: ${view.urgentName}`;
 
     parts.push(`● ${c.needs_you} need you${who}`);
   }
@@ -134,10 +148,9 @@ function dimRow(width: number, text: string): Row {
 }
 
 export interface OverlayView {
-  sessions: readonly Session[];
+  sessions: readonly SessionView[];
   selected: number;
   confirmKill: boolean;
-  confirmQuit: boolean;
   filter: string | null;
 }
 
@@ -185,10 +198,6 @@ export function drawOverlay(view: OverlayView) {
 
   if (view.confirmKill) {
     hint = 'kill selected session? y / n';
-  }
-
-  if (view.confirmQuit) {
-    hint = 'quit atc and kill all sessions? y / n';
   }
 
   rowsList.push(dimRow(width, hint), boxBottom(width));

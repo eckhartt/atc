@@ -1,4 +1,4 @@
-import { unlinkSync } from 'node:fs';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { AgentAdapter } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
@@ -11,7 +11,7 @@ import type { AnswerResult } from './permission-registry';
 import { MAX_CHUNK, MAX_LINE, PROTOCOL_V, decodeMessage, encodeMessage } from './protocol';
 import type { ErrorCode, EventMsg, RequestMsg } from './protocol';
 import { SessionManager } from './sessions';
-import type { SessionDescriptor, SessionState } from './sessions';
+import type { FleetEntry, SessionDescriptor, SessionState } from './sessions';
 import { StateStore } from './state-store';
 
 export interface DaemonOptions {
@@ -26,6 +26,9 @@ export interface DaemonOptions {
   // fleet table once so upgrading keeps the restorable fleet.
   readonly dbPath: string;
   readonly legacyFleetPath?: string;
+
+  // When set, the daemon's pid is written here and removed on stop.
+  readonly pidPath?: string;
 
   // Outbound queue capacity per client; small values force desync in tests.
   readonly queueBytes?: number;
@@ -45,6 +48,10 @@ export interface DaemonHandle {
  * or hostile peer.
  */
 export function startDaemon(opts: DaemonOptions): DaemonHandle {
+  if (opts.pidPath !== undefined) {
+    writeFileSync(opts.pidPath, String(process.pid));
+  }
+
   const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
   const mgr = new SessionManager(opts.adapter, store);
   const clients = new Set<Connection>();
@@ -233,6 +240,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     build: opts.build,
     collectSessions: () => mgr.collectDescriptors(),
     collectSpawnDirs: () => store.collectSpawnDirs(),
+    collectFleet: () => store.loadFleet(),
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
 
@@ -273,6 +281,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       }
 
       attachments.attach(sessionID, client, dims);
+      mgr.attach(sessionID);
 
       scheduleResize(sessionID);
       jiggleSession(sessionID);
@@ -374,6 +383,12 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       reporter.stop(true);
       mgr.killAll();
       store.stop();
+
+      if (opts.pidPath !== undefined) {
+        try {
+          unlinkSync(opts.pidPath);
+        } catch {}
+      }
     },
   };
 }
@@ -402,6 +417,7 @@ interface DaemonContext {
   readonly build: string;
   readonly collectSessions: () => SessionDescriptor[];
   readonly collectSpawnDirs: () => string[];
+  readonly collectFleet: () => FleetEntry[];
   readonly spawnSession: (p: SpawnParams) => SessionDescriptor;
   readonly killSession: (id: string) => boolean;
   readonly ackSession: (id: string) => boolean;
@@ -568,6 +584,11 @@ class Connection {
       }
       case 'dirs.list': {
         this.sendOk(req.id, { dirs: this.ctx.collectSpawnDirs() });
+
+        return;
+      }
+      case 'fleet.list': {
+        this.sendOk(req.id, { fleet: this.ctx.collectFleet() });
 
         return;
       }

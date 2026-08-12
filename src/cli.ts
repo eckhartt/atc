@@ -33,13 +33,19 @@ const main = defineCommand({
           const config = await import('./config');
           const claude = await import('./claude-adapter');
 
-          daemon.startDaemon({
+          const handle = daemon.startDaemon({
             socketPath: config.daemonSocketPath,
             reporterSocketPath: config.socketPath,
             build: `atc/${pkg.version}`,
             adapter: new claude.ClaudeAdapter(config.loadConfig()),
             dbPath: config.dbFile,
             legacyFleetPath: config.legacyFleetFile,
+            pidPath: config.daemonPidFile,
+          });
+
+          process.on('SIGTERM', () => {
+            handle.stop();
+            process.exit(0);
           });
         },
       }),

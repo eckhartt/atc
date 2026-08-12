@@ -1,22 +1,36 @@
-import { basename } from 'node:path';
-import { ClaudeAdapter } from './claude-adapter';
-import { loadConfig } from './config';
-import { collectDirs, formatDir, pickMatches, recordSpawn } from './dirs';
-import { logEvent, startHookServer } from './hooks';
-import { SessionManager, loadFleet } from './sessions';
-import type { Session } from './sessions';
+import { spawn as spawnChild } from 'node:child_process';
+import { basename, join } from 'node:path';
+import pkg from '../package.json';
+import { daemonSocketPath } from './config';
+import { DaemonClient } from './daemon-client';
+import { collectDirs, formatDir, pickMatches } from './dirs';
+import type { EventMsg } from './protocol';
+import { isRecord } from './report';
+import { countSessionStates, sortSessionViews } from './sessions';
+import type { SessionState } from './sessions';
 import { ansi, cols, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } from './ui';
 
 type Mode = 'home' | 'attached' | 'overlay' | 'picker-dir' | 'picker-name' | 'picker-prompt';
 
-const config = loadConfig();
-
-const mgr = new SessionManager(new ClaudeAdapter(config));
+interface MirrorSession {
+  id: string;
+  name: string;
+  cwd: string;
+  state: SessionState;
+  unread: boolean;
+  lastMsg: string;
+  createdAt: number;
+  alive: boolean;
+}
 
 let mode: Mode = 'home';
 let overlaySelected = 0;
 let confirmKill = false;
-let confirmQuit = false;
+
+// The client's mirror of the daemon's fleet, kept fresh by events.
+let fleet: MirrorSession[] = [];
+let focusedID: string | null = null;
+let fleetCount = 0;
 
 // picker state carried across the dir -> name -> prompt steps
 let allDirs: string[] = [];
@@ -28,9 +42,13 @@ let spawnResume = false;
 const stdout = process.stdout;
 
 // Full height: the atc status bar only exists on home/overlay screens;
-// attached sessions surface fleet state via Claude Code's own status line.
+// attached sessions render fleet state via their own status line.
 function ptyRows(): number {
   return Math.max(4, rows());
+}
+
+function findFocused(): MirrorSession | null {
+  return fleet.find((s) => s.id === focusedID) ?? null;
 }
 
 let statusTimer: ReturnType<typeof setTimeout> | null = null;
@@ -44,58 +62,65 @@ function scheduleStatus() {
     statusTimer = null;
 
     if (mode !== 'attached') {
-      drawStatusBar(mgr);
+      const focused = findFocused();
+      const urgent = sortSessionViews(fleet).find((s) => s.state === 'needs_you');
+
+      drawStatusBar({
+        counts: countSessionStates(fleet),
+        focusedName: focused === null ? null : focused.name,
+        urgentName: urgent === undefined ? null : urgent.name,
+      });
     }
   }, 50);
 }
 
-// Force Claude Code to repaint its whole UI after we've drawn over it or
-// switched sessions: a resize down and back up triggers its redraw path.
-function jiggle(s: Session) {
-  if (s.pty === null) {
-    return;
-  }
-
-  s.pty.resize(cols(), ptyRows() - 1);
-
-  setTimeout(() => s.pty?.resize(cols(), ptyRows()), 60);
+async function sendQuiet(m: string, p?: Readonly<Record<string, unknown>>) {
+  try {
+    await client.sendRequest(m, p);
+  } catch {}
 }
 
-function attach(s: Session) {
-  mgr.focusedId = s.id;
-  s.unread = false;
-
-  // Attaching answers the attention request: swapping to a session that
-  // needs you clears its need state (a still-pending prompt re-flags it via
-  // the next Notification).
-  if (s.state === 'needs_you') {
-    s.state = 'running';
-    s.lastMsg = 'attached';
-  }
-
-  mgr.writeStatus();
-
+async function attach(sessionID: string) {
+  focusedID = sessionID;
   mode = 'attached';
 
   stdout.write(ansi.clear + ansi.showCursor);
 
-  jiggle(s);
+  try {
+    await client.sendRequest('session.attach', {
+      session: sessionID,
+      cols: cols(),
+      rows: ptyRows(),
+    });
+  } catch {
+    mode = 'overlay';
+
+    openOverlay();
+
+    return;
+  }
+
   scheduleStatus();
 }
 
-function toBase() {
-  const f = mgr.focused;
+function detachFocused() {
+  if (focusedID !== null) {
+    void sendQuiet('session.detach', { session: focusedID });
+  }
+}
 
-  if (f !== null && f.pty !== null) {
+function toBase() {
+  const f = findFocused();
+
+  if (f !== null && f.alive) {
     mode = 'attached';
 
     stdout.write(ansi.clear + ansi.showCursor);
-
-    jiggle(f);
+    void sendQuiet('session.attach', { session: f.id, cols: cols(), rows: ptyRows() });
   } else {
     mode = 'home';
 
-    drawHome(loadFleet().length);
+    drawHome(fleetCount);
   }
 
   scheduleStatus();
@@ -104,8 +129,8 @@ function toBase() {
 // fzf-style overlay search: null when inactive, the pattern while active.
 let overlayFilter: string | null = null;
 
-function pickOverlaySessions(): Session[] {
-  const sorted = mgr.sortSessions();
+function pickOverlaySessions(): MirrorSession[] {
+  const sorted = sortSessionViews(fleet);
 
   if (overlayFilter === null || overlayFilter === '') {
     return sorted;
@@ -125,7 +150,6 @@ function renderOverlay() {
     sessions,
     selected: overlaySelected,
     confirmKill,
-    confirmQuit,
     filter: overlayFilter,
   });
 
@@ -136,7 +160,6 @@ function openOverlay() {
   mode = 'overlay';
   overlaySelected = 0;
   confirmKill = false;
-  confirmQuit = false;
   overlayFilter = null;
 
   stdout.write(ansi.clear);
@@ -185,7 +208,19 @@ function renderPicker() {
 async function openDirPicker(resume = false) {
   spawnResume = resume;
 
-  allDirs = await collectDirs();
+  let recent: string[] = [];
+
+  try {
+    const answer = await client.sendRequest('dirs.list');
+
+    const dirs = answer['dirs'];
+
+    if (Array.isArray(dirs)) {
+      recent = dirs.filter((d): d is string => typeof d === 'string');
+    }
+  } catch {}
+
+  allDirs = await collectDirs(recent);
 
   pickerInput = '';
   pickerSelected = 0;
@@ -196,51 +231,49 @@ async function openDirPicker(resume = false) {
   renderPicker();
 }
 
-function restoreFleet() {
-  const fleet = loadFleet();
-
-  if (fleet.length === 0) {
+async function restoreFleet() {
+  try {
+    await client.sendRequest('fleet.restore', { cols: cols(), rows: ptyRows() });
+  } catch {
     return;
   }
 
-  let first: Session | null = null;
+  const first = sortSessionViews(fleet).find((s) => s.alive);
 
-  for (const entry of fleet) {
-    // Skip entries already live (restore pressed twice, or partial fleet).
-    const live = mgr.sessions.some((s) => s.pty !== null && s.claudeId === entry.claudeId);
-
-    if (live) {
-      continue;
-    }
-
-    const s = mgr.spawn(entry.cwd, entry.name, '', cols(), ptyRows(), entry.claudeId);
-
-    first ??= s;
-  }
-
-  if (first !== null) {
-    attach(first);
+  if (first !== undefined) {
+    await attach(first.id);
   }
 }
 
-function spawnFromPicker(prompt: string) {
-  const name = spawnName === '' ? basename(spawnDir) : spawnName;
+async function spawnFromPicker(prompt: string) {
+  try {
+    const ok = await client.sendRequest('session.spawn', {
+      cwd: spawnDir,
+      name: spawnName,
+      prompt,
+      cols: cols(),
+      rows: ptyRows(),
+      ...(spawnResume ? { resume: true } : {}),
+    });
 
-  recordSpawn(spawnDir);
+    const spawned = toMirrorSession(ok['session']);
 
-  const namedBy = spawnName === '' ? 'auto' : 'user';
-  const s = mgr.spawn(spawnDir, name, prompt, cols(), ptyRows(), spawnResume, namedBy);
+    if (spawned !== null) {
+      upsertMirror(spawned);
 
-  attach(s);
+      await attach(spawned.id);
+
+      return;
+    }
+  } catch {}
+
+  toBase();
 }
 
 function quit(code = 0): never {
-  mgr.killAll();
+  detachFocused();
 
-  try {
-    server.stop(true);
-  } catch {}
-
+  client.stop();
   stdout.write(ansi.showCursor + ansi.altScreenOff + ansi.reset);
 
   try {
@@ -250,9 +283,51 @@ function quit(code = 0): never {
   process.exit(code);
 }
 
-function printSessionOutput(s: Session, data: string) {
-  if (mode === 'attached' && mgr.focusedId === s.id) {
-    stdout.write(data);
+const SESSION_STATES: readonly SessionState[] = ['running', 'needs_you', 'done', 'exited'];
+
+function toMirrorSession(value: unknown): MirrorSession | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const state = SESSION_STATES.find((x) => x === value['state']);
+
+  if (
+    typeof value['id'] !== 'string' ||
+    typeof value['name'] !== 'string' ||
+    typeof value['cwd'] !== 'string' ||
+    state === undefined ||
+    typeof value['unread'] !== 'boolean' ||
+    typeof value['lastMsg'] !== 'string' ||
+    typeof value['createdAt'] !== 'number' ||
+    typeof value['alive'] !== 'boolean'
+  ) {
+    return null;
+  }
+
+  return {
+    id: value['id'],
+    name: value['name'],
+    cwd: value['cwd'],
+    state,
+    unread: value['unread'],
+    lastMsg: value['lastMsg'],
+    createdAt: value['createdAt'],
+    alive: value['alive'],
+  };
+}
+
+function upsertMirror(d: Readonly<MirrorSession>) {
+  const existing = fleet.find((s) => s.id === d.id);
+
+  if (existing === undefined) {
+    fleet.push({ ...d });
+  } else {
+    existing.name = d.name;
+    existing.state = d.state;
+    existing.unread = d.unread;
+    existing.lastMsg = d.lastMsg;
+    existing.alive = d.alive;
   }
 }
 
@@ -262,7 +337,7 @@ function refreshScreens() {
   }
 
   // Focused session died under us: surface the list instead of a dead screen.
-  const f = mgr.focused;
+  const f = findFocused();
 
   if (mode === 'attached' && f !== null && f.state === 'exited') {
     openOverlay();
@@ -271,17 +346,77 @@ function refreshScreens() {
   scheduleStatus();
 }
 
-mgr.onOutput = printSessionOutput;
-mgr.onChange = refreshScreens;
+function applyDaemonEvent(e: EventMsg) {
+  switch (e.ev) {
+    case 'session.output': {
+      if (mode === 'attached' && e['s'] === focusedID && typeof e['d'] === 'string') {
+        stdout.write(e['d']);
+      }
 
-const server = startHookServer((e) => {
-  // Statusline heartbeats would drown the log.
-  if (e.event !== 'Statusline') {
-    logEvent(e);
+      return;
+    }
+    case 'session.added': {
+      const d = toMirrorSession(e['session']);
+
+      if (d !== null) {
+        upsertMirror(d);
+      }
+
+      refreshScreens();
+
+      return;
+    }
+    case 'session.state': {
+      const s = fleet.find((x) => x.id === e['s']);
+
+      if (s !== undefined) {
+        const next = SESSION_STATES.find((x) => x === e['state']);
+
+        if (next !== undefined) {
+          s.state = next;
+          s.alive = next === 'exited' ? false : s.alive;
+        }
+
+        if (typeof e['unread'] === 'boolean') {
+          s.unread = e['unread'];
+        }
+
+        if (typeof e['lastMsg'] === 'string') {
+          s.lastMsg = e['lastMsg'];
+        }
+      }
+
+      refreshScreens();
+
+      return;
+    }
+    case 'session.renamed': {
+      const s = fleet.find((x) => x.id === e['s']);
+
+      if (s !== undefined && typeof e['name'] === 'string') {
+        s.name = e['name'];
+      }
+
+      refreshScreens();
+
+      return;
+    }
+    case 'session.removed': {
+      fleet = fleet.filter((x) => x.id !== e['s']);
+
+      if (focusedID === e['s']) {
+        focusedID = null;
+      }
+
+      refreshScreens();
+      break;
+    }
+
+    // Desync recovery arrives as ordinary repaint output; permission
+    // events matter to structured clients, not this passthrough TUI.
+    default:
   }
-
-  mgr.applyHook(e);
-});
+}
 
 // Best-effort clipboard: OSC 52 (works through zellij/tmux/ssh) plus any
 // local clipboard helper that exists.
@@ -386,19 +521,12 @@ function applyOverlayKey(buf: Buffer) {
   const filtered = pickOverlaySessions();
   const sel = filtered[overlaySelected];
 
-  if (confirmKill || confirmQuit) {
-    if (buf[0] === 0x79 /* y */) {
-      if (confirmQuit) {
-        quit();
-      }
-
-      if (confirmKill && sel !== undefined) {
-        mgr.kill(sel.id);
-      }
+  if (confirmKill) {
+    if (buf[0] === 0x79 /* y */ && sel !== undefined) {
+      void sendQuiet('session.kill', { session: sel.id });
     }
 
     confirmKill = false;
-    confirmQuit = false;
 
     renderOverlay();
 
@@ -444,15 +572,14 @@ function applyOverlayKey(buf: Buffer) {
 
   const ch = buf.toString();
 
-  if (buf[0] === KEY.enter && sel !== undefined && sel.pty !== null) {
-    attach(sel);
+  if (buf[0] === KEY.enter && sel !== undefined && sel.alive) {
+    void attach(sel.id);
 
     return;
   }
 
   if (ch === 'a' && sel !== undefined) {
-    mgr.ack(sel.id);
-
+    void sendQuiet('session.ack', { session: sel.id });
     renderOverlay();
 
     return;
@@ -471,20 +598,7 @@ function applyOverlayKey(buf: Buffer) {
   }
 
   if ((ch === 'y' || ch === 'Y') && sel !== undefined) {
-    const cmd = mgr.buildResumeCommand(sel.id);
-
-    if (cmd !== null) {
-      copyToClipboard(cmd);
-
-      sel.lastMsg = 'resume cmd copied';
-
-      // Y is eject: hand the session off entirely.
-      if (ch === 'Y') {
-        mgr.kill(sel.id);
-      }
-    }
-
-    renderOverlay();
+    void yankResume(sel.id, ch === 'Y');
 
     return;
   }
@@ -498,16 +612,37 @@ function applyOverlayKey(buf: Buffer) {
   }
 
   if (ch === 'q' || buf[0] === KEY.ctrlC) {
-    if (mgr.sessions.some((s) => s.pty !== null)) {
-      confirmQuit = true;
+    quit();
+  }
+}
 
-      renderOverlay();
+async function yankResume(sessionID: string, eject: boolean) {
+  try {
+    const answer = await client.sendRequest('session.resumeCommand', { session: sessionID });
 
+    const command = answer['command'];
+
+    if (typeof command !== 'string') {
       return;
     }
 
-    quit();
-  }
+    copyToClipboard(command);
+
+    const s = fleet.find((x) => x.id === sessionID);
+
+    if (s !== undefined) {
+      s.lastMsg = 'resume cmd copied';
+    }
+
+    // Eject hands the session off entirely.
+    if (eject) {
+      void sendQuiet('session.kill', { session: sessionID });
+    }
+
+    if (mode === 'overlay') {
+      renderOverlay();
+    }
+  } catch {}
 }
 
 function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
@@ -594,10 +729,78 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
   }
 }
 
+// ---- daemon connection ----
+
+function spawnDaemonDetached() {
+  const exec = process.execPath;
+  const isBun = basename(exec) === 'bun' || basename(exec) === 'bun.exe';
+  const args = isBun ? [join(import.meta.dir, 'cli.ts'), 'daemon'] : ['daemon'];
+
+  spawnChild(exec, args, { detached: true, stdio: 'ignore' }).unref();
+}
+
+async function tryOpenDaemon(): Promise<DaemonClient | null> {
+  try {
+    return await DaemonClient.open(daemonSocketPath);
+  } catch {
+    return null;
+  }
+}
+
+async function bootClient(): Promise<DaemonClient> {
+  let opened = await tryOpenDaemon();
+
+  if (opened === null) {
+    spawnDaemonDetached();
+
+    const deadline = Date.now() + 5000;
+
+    while (opened === null && Date.now() < deadline) {
+      await Bun.sleep(100);
+
+      opened = await tryOpenDaemon();
+    }
+  }
+
+  if (opened === null) {
+    throw new Error('the atc daemon did not come up; try `atc daemon` for its output');
+  }
+
+  await opened.sendHello(`atc/${pkg.version}`);
+
+  return opened;
+}
+
+const client = await bootClient();
+
+client.onEvent = applyDaemonEvent;
+
+{
+  const list = await client.sendRequest('session.list');
+
+  const sessions = list['sessions'];
+
+  if (Array.isArray(sessions)) {
+    for (const raw of sessions) {
+      const d = toMirrorSession(raw);
+
+      if (d !== null) {
+        upsertMirror(d);
+      }
+    }
+  }
+
+  const answer = await client.sendRequest('fleet.list').catch(() => ({}) as const);
+
+  const entries = (answer as Record<string, unknown>)['fleet'];
+
+  fleetCount = Array.isArray(entries) ? entries.length : 0;
+}
+
 process.stdin.setRawMode(true);
 process.stdin.resume();
 
-// Stateful decode for the stdin -> PTY path: a multi-byte character split
+// Stateful decode for the stdin -> daemon path: a multi-byte character split
 // across two stdin reads must not be mangled by per-chunk toString().
 const stdinDecoder = new TextDecoder('utf-8');
 
@@ -610,9 +813,12 @@ process.stdin.on('data', (buf: Buffer) => {
         return;
       }
 
-      const f = mgr.focused;
-
-      f?.pty?.write(stdinDecoder.decode(buf, { stream: true }));
+      if (focusedID !== null) {
+        void sendQuiet('session.input', {
+          session: focusedID,
+          d: stdinDecoder.decode(buf, { stream: true }),
+        });
+      }
 
       return;
     }
@@ -638,18 +844,12 @@ process.stdin.on('data', (buf: Buffer) => {
       }
 
       if (ch === 'R') {
-        restoreFleet();
+        void restoreFleet();
 
         return;
       }
 
       if (ch === 'q' || buf[0] === KEY.ctrlC) {
-        if (mgr.sessions.some((s) => s.pty !== null)) {
-          openOverlay();
-
-          return;
-        }
-
         quit();
       }
 
@@ -701,7 +901,7 @@ process.stdin.on('data', (buf: Buffer) => {
           // Adopt skips the prompt step: claude --resume opens its own
           // session picker inside the new PTY.
           if (spawnResume) {
-            spawnFromPicker('');
+            void spawnFromPicker('');
 
             return;
           }
@@ -728,7 +928,7 @@ process.stdin.on('data', (buf: Buffer) => {
       applyTextKey(
         buf,
         () => {
-          spawnFromPicker(pickerInput.trim());
+          void spawnFromPicker(pickerInput.trim());
         },
         () => {
           pickerInput = '';
@@ -744,12 +944,12 @@ process.stdin.on('data', (buf: Buffer) => {
 });
 
 stdout.on('resize', () => {
-  const f = mgr.focused;
-
-  f?.pty?.resize(cols(), ptyRows());
+  if (mode === 'attached' && focusedID !== null) {
+    void sendQuiet('session.resize', { session: focusedID, cols: cols(), rows: ptyRows() });
+  }
 
   if (mode === 'home') {
-    drawHome(loadFleet().length);
+    drawHome(fleetCount);
   }
 
   if (mode === 'overlay') {
@@ -784,5 +984,5 @@ process.on('SIGHUP', () => quit());
 // ---- start ----
 stdout.write(ansi.altScreenOn);
 
-drawHome(loadFleet().length);
-drawStatusBar(mgr);
+drawHome(fleetCount);
+scheduleStatus();

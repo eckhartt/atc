@@ -67,7 +67,7 @@ const jsonFleetStore: FleetStore = {
   },
 };
 
-export function loadFleet(): FleetEntry[] {
+function loadFleet(): FleetEntry[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(fleetFile, 'utf8'));
 
@@ -307,6 +307,26 @@ export class SessionManager {
     return this.adapter.buildResumeCommand(s.cwd, s.claudeId);
   }
 
+  attach(id: string) {
+    const s = this.sessions.find((x) => x.id === id);
+
+    if (!s) {
+      return;
+    }
+
+    s.unread = false;
+
+    // Attaching answers the attention request: a still-pending prompt
+    // re-flags it via the next notification.
+    if (s.state === 'needs_you') {
+      s.state = 'running';
+      s.lastMsg = 'attached';
+    }
+
+    this.onEvent('state', s);
+    this.emitChange();
+  }
+
   ack(id: string) {
     const s = this.sessions.find((x) => x.id === id);
 
@@ -386,26 +406,36 @@ export class SessionManager {
   }
 
   countStates() {
-    const c = { needs_you: 0, running: 0, done: 0, exited: 0 };
-
-    for (const s of this.sessions) {
-      c[s.state]++;
-    }
-
-    return c;
+    return countSessionStates(this.sessions);
   }
 
-  // Overlay order: who needs you first, then finished turns, then busy, then dead.
   sortSessions(): Session[] {
-    const rank: Record<SessionState, number> = {
-      needs_you: 0,
-      done: 1,
-      running: 2,
-      exited: 3,
-    };
-
-    return [...this.sessions].toSorted(
-      (a, b) => rank[a.state] - rank[b.state] || a.createdAt - b.createdAt,
-    );
+    return sortSessionViews(this.sessions);
   }
+}
+
+export function countSessionStates(
+  list: readonly { readonly state: SessionState }[],
+): Record<SessionState, number> {
+  const c = { needs_you: 0, running: 0, done: 0, exited: 0 };
+
+  for (const s of list) {
+    c[s.state]++;
+  }
+
+  return c;
+}
+
+// Overlay order: who needs you first, then finished turns, then busy, then dead.
+export function sortSessionViews<
+  T extends { readonly state: SessionState; readonly createdAt: number },
+>(list: readonly T[]): T[] {
+  const rank: Record<SessionState, number> = {
+    needs_you: 0,
+    done: 1,
+    running: 2,
+    exited: 3,
+  };
+
+  return [...list].toSorted((a, b) => rank[a.state] - rank[b.state] || a.createdAt - b.createdAt);
 }

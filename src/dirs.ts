@@ -1,32 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
-import { stateDir } from './config';
+import { basename } from 'node:path';
 
-const historyFile = join(stateDir, 'spawn-history.json');
-
-function loadHistory(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(historyFile, 'utf8'));
-
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed.filter((d): d is string => typeof d === 'string');
-  } catch {
-    return [];
-  }
-}
-
-export function recordSpawn(dir: string) {
-  const hist = [dir, ...loadHistory().filter((d) => d !== dir)].slice(0, 50);
-
-  writeFileSync(historyFile, JSON.stringify(hist, null, 2));
-}
-
-// Spawn-history first (most recently used), then zoxide's frecency list.
-export async function collectDirs(): Promise<string[]> {
+// Spawn-history first (most recently used, reported by the daemon), then
+// zoxide's frecency list.
+export async function collectDirs(recent: readonly string[]): Promise<string[]> {
   let zoxide: string[] = [];
 
   try {
@@ -41,7 +19,7 @@ export async function collectDirs(): Promise<string[]> {
 
   const found: string[] = [];
 
-  for (const d of [...loadHistory(), ...zoxide]) {
+  for (const d of [...recent, ...zoxide]) {
     if (!seen.has(d) && existsSync(d)) {
       seen.add(d);
       found.push(d);
