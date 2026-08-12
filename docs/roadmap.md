@@ -18,8 +18,7 @@ Status: done
 
 ## Phase 2 — daemon/client split
 
-Status: not started · design: [daemon](./architecture/daemon.md),
-[protocol](./architecture/protocol.md)
+Status: done · design: [daemon](./architecture/daemon.md), [protocol](./architecture/protocol.md)
 
 - `atcd` owns PTYs, session state, and the hook socket; the TUI becomes a thin client speaking the
   wire protocol over a unix socket.

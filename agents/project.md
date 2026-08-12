@@ -1,9 +1,10 @@
 # atc
 
-atc is a terminal control tower for Claude Code sessions: a single Bun process that hosts stock
-`claude` instances in PTYs behind a keyboard-driven session list with hook-driven attention routing.
-No panes, no tiling, no mouse. See `docs/architecture/overview.md` for how the pieces fit; the
-README documents keys and user-facing behavior.
+atc is a terminal control tower for Claude Code sessions: a daemon (`atc daemon`) hosts stock
+`claude` instances in PTYs, and thin TUI clients drive them over an NDJSON protocol behind a
+keyboard-driven session list with hook-driven attention routing. No panes, no tiling, no mouse. See
+`docs/architecture/overview.md` for how the pieces fit; the README documents keys and user-facing
+behavior.
 
 ## Layout
 
@@ -31,9 +32,10 @@ tooling, not app code.
   reporter must never break the session it reports on.
 - Claude is the naming authority for sessions: `/rename` custom-titles beat user-typed names beat
   auto-summaries.
-- State files live in `~/.local/state/atc/` (`fleet.json`, `status.json`, `events.log`,
-  `spawn-history.json`). `fleet.json` is rewritten on deliberate kills only, so crashes leave a
-  restorable fleet.
+- State lives in `~/.local/state/atc/`: `atc.db` (SQLite — fleet, hook-event trail, spawn history)
+  plus `status.json`, which stays a plain file because statusline reporters read it without speaking
+  the protocol. The fleet is rewritten on deliberate kills only, so crashes leave a restorable
+  fleet.
 
 ## Function naming — project verbs
 

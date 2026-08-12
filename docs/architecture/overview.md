@@ -1,25 +1,26 @@
 # Architecture overview
 
-atc is a single Bun process that multiplexes Claude Code sessions without a tiling layout engine:
-one focused session owns the whole terminal, and everything else is reached through a
-keyboard-driven overlay. The design bet is that the pain of many-session work is attention routing,
-not window management.
+atc multiplexes Claude Code sessions without a tiling layout engine: one focused session owns the
+whole terminal, and everything else is reached through a keyboard-driven overlay. The design bet is
+that the pain of many-session work is attention routing, not window management.
 
 ## Process model
 
 ```text
-terminal ──> atc (src/cli.ts ──> src/index.ts)
-              ├── PTY per session ──> claude --settings <generated>
-              ├── unix socket server (hook + statusline reports)
-              └── state files in ~/.local/state/atc/
+atc (client TUI) ── NDJSON protocol ──> atcd (atc daemon)
+                                         ├── PTY per session ──> claude --settings <generated>
+                                         ├── reporter socket (hook + statusline reports)
+                                         └── SQLite state in ~/.local/state/atc/
 ```
 
-- Each session is a `claude` child process on its own PTY (`bun-pty`). The focused session's bytes
-  pass through raw to the terminal; background output is discarded (Claude repaints on attach,
-  forced by a resize jiggle).
-- There is no vt screen model yet. Attach fidelity relies on Claude Code redrawing itself on
-  SIGWINCH. This is the known MVP tradeoff; the [daemon architecture](./daemon.md) and its
-  [wire protocol](./protocol.md) replace it.
+- The daemon owns the sessions; the first `atc` invocation boots it if its socket is absent, then
+  connects as a thin client speaking the [wire protocol](./protocol.md). Clients are disposable —
+  quitting or crashing one leaves the fleet running. See the [daemon architecture](./daemon.md).
+- Each session is a `claude` child process on its own PTY (`bun-pty`) inside the daemon. Attached
+  clients receive the session's output as sequenced events; a slow client desyncs and resynchronizes
+  rather than stalling the PTY or other clients.
+- There is no vt screen model yet: attach fidelity relies on Claude Code redrawing itself on
+  SIGWINCH (the resize jiggle). The screen model replaces that in a later phase.
 - `src/sessions.ts` is the state machine: session states are `running`, `needs_you`, `done`,
   `exited`, each with an `unread` attention flag.
 
@@ -38,20 +39,20 @@ Sessions are instrumented via a generated settings file passed as `claude --sett
 - Session names are pulled from Claude's transcripts (`custom-title` lines from `/rename`, `summary`
   lines as fallback) — atc is not the naming authority.
 
-## State files
+## State
 
 All in `~/.local/state/atc/`:
 
-| File                 | Purpose                                                                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `fleet.json`         | Live fleet (name, cwd, Claude session id). Rewritten on deliberate kills only, so any crash or quit leaves a restorable fleet for `R`. |
-| `status.json`        | Counts + most urgent session, read by the injected statusline on each render.                                                          |
-| `events.log`         | One JSON line per received hook event (statusline heartbeats excluded), for debugging state issues.                                    |
-| `spawn-history.json` | Directories previously spawned from, merged with zoxide's frecency list in the spawn picker.                                           |
+| File          | Purpose                                                                                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, and the spawn-directory history for the picker.             |
+| `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol. |
+| `daemon.pid`  | The daemon's pid, for operators and test harnesses that need to stop it.                                                                             |
 
 ## Recovery model
 
-atc's children die with it (PTY close → SIGHUP), but Claude streams transcripts to disk
-continuously, so sessions are data, not processes. `claude --resume <id>` reconstructs any of them;
-the fleet file makes that a single keypress after a crash. The same mechanism powers adopt (`r`) and
+A client crash costs nothing — the daemon keeps hosting the fleet. If the daemon itself dies, its
+children die with it (PTY close → SIGHUP), but Claude streams transcripts to disk continuously, so
+sessions are data, not processes. `claude --resume <id>` reconstructs any of them; the fleet table
+makes that a single keypress (`R`) after a cold boot. The same mechanism powers adopt (`r`) and
 yank/eject (`y`/`Y`).
