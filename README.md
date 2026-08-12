@@ -17,10 +17,12 @@
 ## Run
 
 ```sh
-bun src/index.ts   # or `atc` if bin/atc is on your PATH
+bun src/cli.ts   # or `atc` if bin/atc is on your PATH
 ```
 
-Runs fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches atc).
+The first invocation auto-spawns the daemon (`atc daemon` runs it in the foreground for systemd or
+debugging); the TUI is a thin client, so quitting or crashing it leaves every session running. Runs
+fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches atc).
 
 ## Keys
 
@@ -29,7 +31,7 @@ Runs fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space rea
 | `Ctrl-Space`    | anywhere       | toggle session overlay                                                                         |
 | `n`             | home/overlay   | spawn: pick dir (zoxide + history, fuzzy) → name → optional first prompt                       |
 | `r`             | home/overlay   | adopt: pick dir → name → `claude --resume` (Claude's session picker opens in the new PTY)      |
-| `R`             | home           | restore last fleet — respawns every session from `fleet.json` via `claude --resume <id>`       |
+| `R`             | home           | restore last fleet after a daemon death — respawns every session via `claude --resume <id>`    |
 | `j`/`k`/`↑`/`↓` | overlay/picker | move                                                                                           |
 | `Enter`         | overlay        | attach (auto-acks)                                                                             |
 | `/`             | overlay        | fzf-style filter: type to narrow by name/dir, `⏎` attach top match, `esc` clear                |
@@ -37,7 +39,7 @@ Runs fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space rea
 | `y`             | overlay        | yank `cd <dir> && claude --resume <id>` to clipboard (OSC 52 + clip.exe/wl-copy/xclip)         |
 | `Y`             | overlay        | eject: yank the resume command, then kill the session here — paste it in any pane to take over |
 | `K`             | overlay        | kill selected (confirm with `y`)                                                               |
-| `q`             | home/overlay   | quit (confirm if sessions live)                                                                |
+| `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                          |
 
 Everything else is passed through to the focused Claude session, which owns the full screen. Fleet
 state renders inside Claude Code's own status line (injected via the same `--settings` file): your
@@ -60,14 +62,15 @@ status bar turns red and names the most urgent session.
 { "claudeBin": "claude", "claudeArgs": [] }
 ```
 
-`claudeArgs` is prepended to every spawn (e.g. `["--model", "opus"]`). Spawn-dir history,
-`fleet.json`, `status.json` (read by the injected statusline), and `events.log` (one JSON line per
-received hook event, for debugging state issues) live in `~/.local/state/atc/`.
+`claudeArgs` is prepended to every spawn (e.g. `["--model", "opus"]`). Daemon state — the restorable
+fleet, spawn-dir history, and the hook-event trail — lives in `~/.local/state/atc/atc.db` (SQLite),
+next to `status.json` (read by the injected statusline) and `daemon.pid`.
 
 ## Crash safety
 
-atc continuously writes the live fleet (name, cwd, Claude session id) to `fleet.json`. If atc dies —
-crash, SIGKILL, closed window — the child claude processes die with it, but every session's
-transcript is already on disk. Restart atc and press `R`: the whole fleet respawns via
-`claude --resume`. Only deliberate kills (`K`, `Y` eject) remove entries from the fleet file, so
-quitting atc also leaves a restorable fleet for next time.
+A client crash or closed window costs nothing: the daemon keeps hosting the fleet, and the next
+`atc` reconnects. The daemon continuously writes the live fleet (name, cwd, Claude session id) to
+its SQLite store. If the daemon itself dies — crash, SIGKILL, reboot — the child claude processes
+die with it, but every session's transcript is already on disk. Start atc and press `R`: the whole
+fleet respawns via `claude --resume`. Only deliberate kills (`K`, `Y` eject) remove entries from the
+fleet, so it stays restorable.
