@@ -16,6 +16,7 @@
           "attach",
           "boot",
           "copy",
+          "detach",
           "draw",
           "jiggle",
           "kill",

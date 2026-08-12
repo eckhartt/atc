@@ -77,6 +77,7 @@ echo "FAKE_CLAUDE_UP args: $@"
 printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
 sleep 0.3
 printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+while read -r line; do echo "GOT:$line"; done
 sleep 30
 `,
       { mode: 0o755 },
@@ -387,3 +388,252 @@ test('it resolves a pending permission request as dismissed when the session die
 
   expect(resolved['decision']).toBe('dismissed');
 });
+
+test('it streams pty output to an attached client with increasing seq', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  const attached = await client.sendRequest('session.attach', {
+    session: id,
+    cols: 100,
+    rows: 30,
+  });
+
+  expect(attached).toStrictEqual({ cols: 100, rows: 30 });
+
+  await client.sendRequest('session.input', { session: id, d: 'hello\n' });
+
+  await waitForEvent(
+    events,
+    (e) => e.ev === 'session.output' && String(e['d']).includes('GOT:hello'),
+  );
+
+  const seqs = events.filter((e) => e.ev === 'session.output').map((e) => Number(e['seq']));
+
+  expect(seqs).toStrictEqual(seqs.toSorted((a, b) => a - b));
+  expect(new Set(seqs).size).toBe(seqs.length);
+});
+
+test('it stops streaming to a detached client while others keep receiving', async () => {
+  const ctx = setupDaemonProc();
+
+  const watcher = await ctx.openClient();
+  const leaver = await ctx.openClient();
+
+  const watcherEvents: EventMsg[] = [];
+  const leaverEvents: EventMsg[] = [];
+
+  watcher.onEvent = (e) => {
+    watcherEvents.push(e);
+  };
+
+  leaver.onEvent = (e) => {
+    leaverEvents.push(e);
+  };
+
+  await watcher.sendHello('atc/test');
+  await leaver.sendHello('atc/test');
+
+  const ok = await watcher.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  await watcher.sendRequest('session.attach', { session: id, cols: 80, rows: 24 });
+  await leaver.sendRequest('session.attach', { session: id, cols: 80, rows: 24 });
+  await leaver.sendRequest('session.detach', { session: id });
+  await watcher.sendRequest('session.input', { session: id, d: 'ping\n' });
+
+  await waitForEvent(
+    watcherEvents,
+    (e) => e.ev === 'session.output' && String(e['d']).includes('GOT:ping'),
+  );
+
+  const leaked = leaverEvents.filter(
+    (e) => e.ev === 'session.output' && String(e['d']).includes('GOT:ping'),
+  );
+
+  expect(leaked).toStrictEqual([]);
+});
+
+test('it resizes the pty to the smallest dims across attached clients', async () => {
+  const ctx = setupDaemonProc();
+
+  const wide = await ctx.openClient();
+  const narrow = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  wide.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await wide.sendHello('atc/test');
+  await narrow.sendHello('atc/test');
+
+  const ok = await wide.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  await wide.sendRequest('session.attach', { session: id, cols: 120, rows: 40 });
+
+  await waitForEvent(events, (e) => e.ev === 'session.resized' && e['cols'] === 120);
+
+  await narrow.sendRequest('session.attach', { session: id, cols: 90, rows: 28 });
+
+  const shrunk = await waitForEvent(events, (e) => e.ev === 'session.resized' && e['cols'] === 90);
+
+  expect(shrunk).toMatchObject({ s: id, cols: 90, rows: 28 });
+});
+
+test('it answers session.input on a dead session with session_dead', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  await client.sendRequest('session.kill', { session: id });
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['lastMsg'] === 'killed');
+
+  expect(client.sendRequest('session.input', { session: id, d: 'x' })).rejects.toMatchObject({
+    code: 'session_dead',
+  });
+});
+
+test('it answers session.attach on a dead session with session_dead', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  await client.sendRequest('session.kill', { session: id });
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['lastMsg'] === 'killed');
+
+  expect(
+    client.sendRequest('session.attach', { session: id, cols: 80, rows: 24 }),
+  ).rejects.toMatchObject({ code: 'session_dead' });
+});
+
+test('it drops a slow client to desync and reports the dropped bytes', async () => {
+  const ctx = setupDaemonProc();
+
+  const driver = await ctx.openClient();
+
+  await driver.sendHello('atc/test');
+
+  const ok = await driver.sendRequest('session.spawn', { cwd: ctx.home, cols: 80, rows: 24 });
+
+  const spawned = getRecord(ok, 'session');
+  const id = getString(spawned, 'id');
+
+  // A raw slow reader: handshakes, attaches, then stops reading so the
+  // daemon's outbound queue for it can only overflow.
+  const net = await import('node:net');
+
+  const slow = net.connect(ctx.daemonSock);
+
+  onTestFinished(() => {
+    slow.destroy();
+  });
+
+  await new Promise<void>((resolve) => {
+    slow.once('connect', () => {
+      resolve();
+    });
+  });
+
+  let received = '';
+
+  slow.on('data', (chunk: Buffer) => {
+    received += chunk.toString('utf8');
+  });
+
+  slow.write('{"v":1,"id":1,"m":"daemon.hello","p":{"client":"atc/slow"}}\n');
+
+  const deadline = Date.now() + 5000;
+
+  while (!received.includes('"id":1') && Date.now() < deadline) {
+    await Bun.sleep(20);
+  }
+
+  slow.write(`{"v":1,"id":2,"m":"session.attach","p":{"session":"${id}","cols":80,"rows":24}}\n`);
+
+  while (!received.includes('"id":2') && Date.now() < deadline) {
+    await Bun.sleep(20);
+  }
+
+  slow.pause();
+
+  // The pty line discipline caps a canonical-mode line at 4095 bytes, so
+  // the flood is many short lines; each echoes back at roughly double its
+  // size and exceeds the 2 MiB queue while the reader is paused.
+  const line = 'x'.repeat(3000);
+  const burst = `${line}\n`.repeat(300);
+
+  for (let i = 0; i < 4; i++) {
+    await driver.sendRequest('session.input', { session: id, d: burst });
+  }
+
+  await Bun.sleep(500);
+
+  slow.resume();
+
+  const desyncDeadline = Date.now() + 10_000;
+
+  while (!received.includes('session.desync') && Date.now() < desyncDeadline) {
+    await Bun.sleep(50);
+  }
+
+  const desyncLine = received.split('\n').find((raw) => raw.includes('session.desync'));
+
+  if (desyncLine === undefined) {
+    throw new Error('no session.desync event arrived');
+  }
+
+  expect(JSON.parse(desyncLine)).toMatchObject({
+    ev: 'session.desync',
+    s: id,
+    dropped: expect.toBePositive() as number,
+  });
+}, 20_000);

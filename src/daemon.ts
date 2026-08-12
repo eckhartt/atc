@@ -1,6 +1,8 @@
 import { unlinkSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { AgentAdapter } from './agent-adapter';
+import { AttachRegistry } from './attach-registry';
+import type { Dims } from './attach-registry';
 import { logEvent, startHookServer } from './hooks';
 import { OutboundQueue } from './outbound-queue';
 import type { SocketWriter } from './outbound-queue';
@@ -18,6 +20,9 @@ export interface DaemonOptions {
   // Build string sent in the handshake and in mismatch errors, e.g. "atc/0.1.0".
   readonly build: string;
   readonly adapter: AgentAdapter;
+
+  // Outbound queue capacity per client; small values force desync in tests.
+  readonly queueBytes?: number;
 }
 
 export interface DaemonHandle {
@@ -60,6 +65,97 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     emitEvent({ v: PROTOCOL_V, ev: 'permission.resolved', request: id, decision });
   };
 
+  const attachments = new AttachRegistry<OutputClient>();
+  const seqs = new Map<string, number>();
+  const ptyDims = new Map<string, Dims>();
+  const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const applyEffectiveDims = (sessionID: string) => {
+    const dims = attachments.findEffectiveDims(sessionID);
+
+    if (dims === null) {
+      return;
+    }
+
+    const prev = ptyDims.get(sessionID);
+
+    if (prev !== undefined && prev.cols === dims.cols && prev.rows === dims.rows) {
+      return;
+    }
+
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+
+    s?.pty?.resize(dims.cols, dims.rows);
+    ptyDims.set(sessionID, dims);
+
+    emitEvent({
+      v: PROTOCOL_V,
+      ev: 'session.resized',
+      s: sessionID,
+      cols: dims.cols,
+      rows: dims.rows,
+    });
+  };
+
+  // Debounced so two clients resizing in opposite directions cannot produce
+  // a SIGWINCH storm; a no-op effective size never reaches the PTY.
+  const scheduleResize = (sessionID: string) => {
+    if (resizeTimers.has(sessionID)) {
+      return;
+    }
+
+    resizeTimers.set(
+      sessionID,
+      setTimeout(() => {
+        resizeTimers.delete(sessionID);
+
+        applyEffectiveDims(sessionID);
+      }, 50),
+    );
+  };
+
+  // A resize down and back up forces a full repaint from the hosted agent;
+  // this is the pre-screen-model replay on attach and desync recovery.
+  const jiggleSession = (sessionID: string) => {
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+
+    if (s === undefined || s.pty === null) {
+      return;
+    }
+
+    const dims = ptyDims.get(sessionID) ?? { cols: 80, rows: 24 };
+
+    s.pty.resize(dims.cols, Math.max(2, dims.rows - 1));
+
+    setTimeout(() => {
+      s.pty?.resize(dims.cols, dims.rows);
+    }, 60);
+  };
+
+  mgr.onOutput = (s, data) => {
+    const conns = attachments.collectClients(s.id);
+
+    if (conns.length === 0) {
+      return;
+    }
+
+    let seq = seqs.get(s.id) ?? 0;
+
+    for (let i = 0; i < data.length; i += MAX_CHUNK) {
+      const chunk = data.slice(i, i + MAX_CHUNK);
+
+      seq++;
+
+      const event: EventMsg = { v: PROTOCOL_V, ev: 'session.output', s: s.id, seq, d: chunk };
+
+      for (const conn of conns) {
+        conn.sendOutput(s.id, event, chunk.length);
+      }
+    }
+
+    seqs.set(s.id, seq);
+  };
+
   // Permission requests are synthesized from attention transitions: entering
   // needs_you opens one, and leaving it (answered directly in the terminal,
   // or the session dying) dismisses whatever is pending.
@@ -88,6 +184,12 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
   mgr.onEvent = (kind, s) => {
     recordAttention(kind, s);
+
+    if (kind === 'removed') {
+      attachments.removeSession(s.id);
+      seqs.delete(s.id);
+      ptyDims.delete(s.id);
+    }
 
     const builders: Record<typeof kind, () => EventMsg> = {
       added: () => ({ v: PROTOCOL_V, ev: 'session.added', session: getDescriptor(mgr, s.id) }),
@@ -126,6 +228,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
 
+      ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
+
       return getDescriptor(mgr, s.id);
     },
     killSession: (id) => {
@@ -148,6 +252,62 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     },
     buildResumeCommand: (id) => mgr.buildResumeCommand(id),
     answerPermission: (request, decision) => registry.answer(request, decision),
+    attachSession: (client, sessionID, dims) => {
+      const s = mgr.sessions.find((x) => x.id === sessionID);
+
+      if (s === undefined) {
+        return 'missing';
+      }
+
+      if (s.pty === null) {
+        return 'dead';
+      }
+
+      attachments.attach(sessionID, client, dims);
+
+      scheduleResize(sessionID);
+      jiggleSession(sessionID);
+
+      return 'ok';
+    },
+    detachSession: (client, sessionID) => {
+      attachments.detach(sessionID, client);
+
+      scheduleResize(sessionID);
+    },
+    detachClient: (client) => {
+      for (const sessionID of attachments.detachAll(client)) {
+        scheduleResize(sessionID);
+      }
+    },
+    writeSessionInput: (sessionID, data) => {
+      const s = mgr.sessions.find((x) => x.id === sessionID);
+
+      if (s === undefined) {
+        return 'missing';
+      }
+
+      if (s.pty === null) {
+        return 'dead';
+      }
+
+      s.pty.write(data);
+
+      return 'ok';
+    },
+    resizeSession: (client, sessionID, dims) => {
+      if (!attachments.updateDims(sessionID, client, dims)) {
+        return false;
+      }
+
+      scheduleResize(sessionID);
+
+      return true;
+    },
+    jiggleSession,
+    ...(opts.queueBytes === undefined ? {} : { queueBytes: opts.queueBytes }),
+    getEffectiveDims: (sessionID) =>
+      attachments.findEffectiveDims(sessionID) ?? ptyDims.get(sessionID) ?? { cols: 80, rows: 24 },
     restoreFleet: (cols, rows) => {
       let restored = 0;
 
@@ -158,7 +318,9 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
           continue;
         }
 
-        mgr.spawn(entry.cwd, entry.name, '', cols, rows, entry.claudeId);
+        const s = mgr.spawn(entry.cwd, entry.name, '', cols, rows, entry.claudeId);
+
+        ptyDims.set(s.id, { cols, rows });
 
         restored++;
       }
@@ -187,6 +349,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       },
       close(socket) {
         clients.delete(socket.data);
+        ctx.detachClient(socket.data);
       },
       error() {},
     },
@@ -194,6 +357,10 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
   return {
     stop() {
+      for (const timer of resizeTimers.values()) {
+        clearTimeout(timer);
+      }
+
       server.stop(true);
       reporter.stop(true);
       mgr.killAll();
@@ -230,6 +397,24 @@ interface DaemonContext {
   readonly buildResumeCommand: (id: string) => string | null;
   readonly answerPermission: (request: string, decision: string) => AnswerResult;
   readonly restoreFleet: (cols: number, rows: number) => number;
+  readonly attachSession: (
+    client: OutputClient,
+    sessionID: string,
+    dims: Dims,
+  ) => 'ok' | 'missing' | 'dead';
+  readonly detachSession: (client: OutputClient, sessionID: string) => void;
+  readonly detachClient: (client: OutputClient) => void;
+  readonly writeSessionInput: (sessionID: string, data: string) => 'ok' | 'missing' | 'dead';
+  readonly resizeSession: (client: OutputClient, sessionID: string, dims: Dims) => boolean;
+  readonly jiggleSession: (sessionID: string) => void;
+  readonly queueBytes?: number;
+  readonly getEffectiveDims: (sessionID: string) => Dims;
+}
+
+// The slice of a connection the attach bookkeeping needs: identity plus the
+// ability to receive output events.
+interface OutputClient {
+  readonly sendOutput: (sessionID: string, event: EventMsg, byteLength: number) => void;
 }
 
 interface PeerSocket extends SocketWriter {
@@ -247,16 +432,40 @@ class Connection {
 
   private helloed = false;
 
+  private readonly desynced = new Map<string, number>();
+
   constructor(peer: PeerSocket, ctx: DaemonContext) {
     this.peer = peer;
     this.ctx = ctx;
 
-    this.queue = new OutboundQueue(peer);
+    this.queue = new OutboundQueue(peer, ctx.queueBytes);
   }
 
   sendEvent(event: EventMsg): void {
-    if (this.helloed) {
-      this.queue.send(encodeMessage(event));
+    if (this.helloed && !this.queue.send(encodeMessage(event))) {
+      this.peer.end();
+    }
+  }
+
+  // Output is droppable: an overflow discards this session's backlog for
+  // this client and resynchronizes with a repaint once the queue drains. An
+  // intermediate chunk is never dropped without that resync, because a byte
+  // stream cut mid-escape corrupts the client's terminal state.
+  sendOutput(sessionID: string, event: EventMsg, byteLength: number): void {
+    if (!this.helloed) {
+      return;
+    }
+
+    const dropped = this.desynced.get(sessionID);
+
+    if (dropped !== undefined) {
+      this.desynced.set(sessionID, dropped + byteLength);
+
+      return;
+    }
+
+    if (!this.queue.send(encodeMessage(event))) {
+      this.desynced.set(sessionID, byteLength);
     }
   }
 
@@ -289,6 +498,16 @@ class Connection {
 
   drain(): void {
     this.queue.drain();
+
+    if (this.queue.queuedBytes > 0 || this.desynced.size === 0) {
+      return;
+    }
+
+    for (const [sessionID, dropped] of this.desynced) {
+      this.desynced.delete(sessionID);
+      this.sendEvent({ v: PROTOCOL_V, ev: 'session.desync', s: sessionID, dropped });
+      this.ctx.jiggleSession(sessionID);
+    }
   }
 
   // false: the connection is beyond recovery and gets closed.
@@ -363,6 +582,29 @@ class Connection {
 
         return;
       }
+      case 'session.attach': {
+        this.applyAttach(req);
+
+        return;
+      }
+      case 'session.detach': {
+        const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+
+        this.ctx.detachSession(this, sessionID);
+        this.sendOk(req.id, {});
+
+        return;
+      }
+      case 'session.input': {
+        this.applyInput(req);
+
+        return;
+      }
+      case 'session.resize': {
+        this.applyResize(req);
+
+        return;
+      }
       case 'permission.respond': {
         this.applyPermissionRespond(req);
 
@@ -410,6 +652,69 @@ class Connection {
     });
 
     this.sendOk(req.id, { session });
+  }
+
+  private applyAttach(req: RequestMsg): void {
+    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+    const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
+    const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
+    const result = this.ctx.attachSession(this, sessionID, { cols, rows });
+
+    if (result === 'missing') {
+      this.sendErr(req.id, 'no_such_session', `no session '${sessionID}'`);
+
+      return;
+    }
+
+    if (result === 'dead') {
+      this.sendErr(req.id, 'session_dead', `session '${sessionID}' has no live process`);
+
+      return;
+    }
+
+    const dims = this.ctx.getEffectiveDims(sessionID);
+
+    this.sendOk(req.id, { cols: dims.cols, rows: dims.rows });
+  }
+
+  private applyInput(req: RequestMsg): void {
+    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+    const data = typeof req.p?.['d'] === 'string' ? req.p['d'] : '';
+    const result = this.ctx.writeSessionInput(sessionID, data);
+
+    if (result === 'missing') {
+      this.sendErr(req.id, 'no_such_session', `no session '${sessionID}'`);
+
+      return;
+    }
+
+    if (result === 'dead') {
+      this.sendErr(req.id, 'session_dead', `session '${sessionID}' has no live process`);
+
+      return;
+    }
+
+    this.sendOk(req.id, {});
+  }
+
+  private applyResize(req: RequestMsg): void {
+    const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+    const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 0;
+    const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 0;
+
+    if (cols < 1 || rows < 1) {
+      this.sendErr(req.id, 'bad_args', 'session.resize requires positive cols and rows');
+
+      return;
+    }
+
+    if (!this.ctx.resizeSession(this, sessionID, { cols, rows })) {
+      this.sendErr(req.id, 'bad_args', `not attached to session '${sessionID}'`);
+
+      return;
+    }
+
+    this.sendOk(req.id, {});
   }
 
   private applyPermissionRespond(req: RequestMsg): void {
