@@ -24,7 +24,8 @@ type Mode =
   | 'brief'
   | 'picker-dir'
   | 'picker-name'
-  | 'picker-prompt';
+  | 'picker-prompt'
+  | 'picker-eject';
 
 interface MirrorSession {
   id: string;
@@ -34,6 +35,7 @@ interface MirrorSession {
   unread: boolean;
   lastMsg: string;
   createdAt: number;
+  kind: 'pty' | 'jsonl';
   alive: boolean;
 }
 
@@ -141,6 +143,28 @@ function toBase() {
 }
 
 let briefLines: string[] = ['briefing…'];
+let ejectTarget = '';
+
+async function yankToHeadless(instruction: string) {
+  try {
+    await client.sendRequest('session.eject', {
+      session: ejectTarget,
+      ...(instruction === '' ? {} : { prompt: instruction }),
+    });
+  } catch {}
+
+  openOverlay();
+}
+
+async function adoptSession(id: string) {
+  try {
+    await client.sendRequest('session.adopt', { session: id, cols: cols(), rows: ptyRows() });
+
+    await attach(id);
+  } catch {
+    openOverlay();
+  }
+}
 
 async function openBrief() {
   mode = 'brief';
@@ -245,6 +269,15 @@ function renderPicker() {
       input: pickerInput,
       placeholder: basename(spawnDir),
       hint: `session name for ${formatDir(spawnDir)} · ⏎ accept · esc back`,
+    });
+  } else if (mode === 'picker-eject') {
+    drawPicker({
+      title: 'eject: headless instruction',
+      items: [],
+      selected: -1,
+      input: pickerInput,
+      placeholder: 'continue the task autonomously',
+      hint: 'instruction for the headless run · ⏎ eject · esc back',
     });
   } else {
     drawPicker({
@@ -368,6 +401,7 @@ function toMirrorSession(value: unknown): MirrorSession | null {
     unread: value['unread'],
     lastMsg: value['lastMsg'],
     createdAt: value['createdAt'],
+    kind: value['kind'] === 'jsonl' ? 'jsonl' : 'pty',
     alive: value['alive'],
   };
 }
@@ -382,6 +416,7 @@ function upsertMirror(d: Readonly<MirrorSession>) {
     existing.state = d.state;
     existing.unread = d.unread;
     existing.lastMsg = d.lastMsg;
+    existing.kind = d.kind;
     existing.alive = d.alive;
   }
 }
@@ -648,6 +683,24 @@ function applyOverlayKey(buf: Buffer) {
 
   if (ch === 'b') {
     void openBrief();
+
+    return;
+  }
+
+  if (ch === 'H' && sel !== undefined && sel.kind === 'pty' && sel.alive) {
+    ejectTarget = sel.id;
+    pickerInput = '';
+    mode = 'picker-eject';
+
+    stdout.write(ansi.clear);
+
+    renderPicker();
+
+    return;
+  }
+
+  if (ch === 'P' && sel !== undefined && sel.kind === 'jsonl') {
+    void adoptSession(sel.id);
 
     return;
   }
@@ -961,6 +1014,19 @@ process.stdin.on('data', (buf: Buffer) => {
           stdout.write(ansi.clear);
 
           renderPicker();
+        },
+      );
+
+      return;
+    }
+    case 'picker-eject': {
+      applyTextKey(
+        buf,
+        () => {
+          void yankToHeadless(pickerInput.trim());
+        },
+        () => {
+          openOverlay();
         },
       );
     }

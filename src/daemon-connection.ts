@@ -36,7 +36,12 @@ export interface DaemonContext {
   ) => 'ok' | 'missing' | 'dead';
   readonly detachSession: (client: OutputClient, sessionID: string) => void;
   readonly detachClient: (client: OutputClient) => void;
-  readonly writeSessionInput: (sessionID: string, data: string) => 'ok' | 'missing' | 'dead';
+  readonly writeSessionInput: (
+    sessionID: string,
+    data: string,
+  ) => 'busy' | 'ok' | 'missing' | 'dead';
+  readonly ejectSession: (id: string, prompt: string) => 'ok' | 'missing' | 'unsupported';
+  readonly adoptSession: (id: string, cols: number, rows: number) => boolean;
   readonly resizeSession: (client: OutputClient, sessionID: string, dims: Dims) => boolean;
   readonly resyncClient: (sessionID: string, client: OutputClient) => Promise<void>;
   readonly queueBytes?: number;
@@ -229,6 +234,47 @@ export class DaemonConnection {
 
         return;
       }
+      case 'session.eject': {
+        const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+
+        const prompt =
+          typeof req.p?.['prompt'] === 'string' && req.p['prompt'] !== ''
+            ? req.p['prompt']
+            : 'Continue the task autonomously. Verify your work as you go and stop when it is complete.';
+
+        const result = this.ctx.ejectSession(sessionID, prompt);
+
+        if (result === 'ok') {
+          this.sendOk(req.id, {});
+        } else if (result === 'unsupported') {
+          this.sendErr(req.id, 'unsupported', 'this daemon has no headless runner');
+        } else {
+          this.sendErr(
+            req.id,
+            'no_such_session',
+            `session '${sessionID}' has no live terminal with a captured agent session id`,
+          );
+        }
+
+        return;
+      }
+      case 'session.adopt': {
+        const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
+        const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
+        const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
+
+        if (this.ctx.adoptSession(sessionID, cols, rows)) {
+          this.sendOk(req.id, {});
+        } else {
+          this.sendErr(
+            req.id,
+            'no_such_session',
+            `session '${sessionID}' is not a headless session with a captured agent session id`,
+          );
+        }
+
+        return;
+      }
       case 'session.attach': {
         this.applyAttach(req);
 
@@ -337,6 +383,16 @@ export class DaemonConnection {
 
     if (result === 'dead') {
       this.sendErr(req.id, 'session_dead', `session '${sessionID}' has no live process`);
+
+      return;
+    }
+
+    if (result === 'busy') {
+      this.sendErr(
+        req.id,
+        'too_slow',
+        `session '${sessionID}' is mid-run; wait for the turn to end`,
+      );
 
       return;
     }

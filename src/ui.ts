@@ -189,18 +189,24 @@ export function drawOverlay(view: OverlayView) {
     );
   }
 
-  let hint =
-    '↑↓/jk · ⏎ attach · / filter · a ack · b brief · n new · r adopt · y yank · Y eject · K kill · q quit';
+  let hints = [
+    '↑↓/jk · ⏎ attach · / filter · a ack · b brief · n new · r adopt · q quit',
+    'H headless · P re-adopt · y yank · Y eject · K kill',
+  ];
 
   if (view.filter !== null) {
-    hint = 'type to filter · ↑↓ move · ⏎ attach · esc clear';
+    hints = ['type to filter · ↑↓ move · ⏎ attach · esc clear'];
   }
 
   if (view.confirmKill) {
-    hint = 'kill selected session? y / n';
+    hints = ['kill selected session? y / n'];
   }
 
-  rowsList.push(dimRow(width, hint), boxBottom(width));
+  for (const hint of hints) {
+    rowsList.push(dimRow(width, hint));
+  }
+
+  rowsList.push(boxBottom(width));
 
   drawBox(rowsList);
 }

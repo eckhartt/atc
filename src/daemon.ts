@@ -39,7 +39,30 @@ export interface DaemonOptions {
   // Messages API call. Injectable because the network is a boundary tests
   // never cross; absent means briefing is unsupported.
   readonly briefLoader?: (sessions: readonly SessionDescriptor[]) => Promise<string>;
+
+  // Runs one headless turn over a session; the real one drives the Agent
+  // SDK, which spawns real claude — a boundary tests never cross. Absent
+  // means eject is unsupported.
+  readonly headlessRunner?: HeadlessRunner;
 }
+
+interface HeadlessRunRequest {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly resume?: string;
+  readonly permissionMode?: string;
+}
+
+interface HeadlessRunEvents {
+  readonly onOutput: (text: string) => void;
+  readonly onDone: (summary: string) => void;
+  readonly onNeedsYou: (msg: string) => void;
+}
+
+export type HeadlessRunner = (
+  opts: HeadlessRunRequest,
+  hooks: HeadlessRunEvents,
+) => { readonly stop: () => void };
 
 export interface DaemonHandle {
   readonly stop: () => void;
@@ -129,6 +152,48 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
   registry.onResolved = (id, decision) => {
     emitEvent({ v: PROTOCOL_V, ev: 'permission.resolved', request: id, decision });
+  };
+
+  const headlessRuns = new Map<string, { readonly stop: () => void }>();
+
+  const startHeadlessTurn = (sessionID: string, prompt: string): boolean => {
+    const runner = opts.headlessRunner;
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+
+    if (runner === undefined || s === undefined || headlessRuns.has(sessionID)) {
+      return false;
+    }
+
+    mgr.updateSurfaceState(sessionID, 'running', 'headless turn running');
+
+    const handle = runner(
+      {
+        cwd: s.cwd,
+        prompt,
+        ...(s.claudeId === undefined ? {} : { resume: s.claudeId }),
+        permissionMode: 'auto',
+      },
+      {
+        onOutput: (text) => {
+          mgr.onOutput(s, text);
+        },
+        onDone: (summary) => {
+          headlessRuns.delete(sessionID);
+
+          const doneMsg = summary === '' ? 'headless turn done' : summary;
+
+          mgr.updateSurfaceState(sessionID, 'done', doneMsg);
+        },
+        onNeedsYou: (msg) => {
+          headlessRuns.delete(sessionID);
+          mgr.updateSurfaceState(sessionID, 'needs_you', msg);
+        },
+      },
+    );
+
+    headlessRuns.set(sessionID, handle);
+
+    return true;
   };
 
   const attachments = new AttachRegistry<OutputClient>();
@@ -378,7 +443,40 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         return false;
       }
 
+      headlessRuns.get(id)?.stop();
+      headlessRuns.delete(id);
       mgr.kill(id);
+
+      return true;
+    },
+    ejectSession: (id, prompt) => {
+      if (opts.headlessRunner === undefined) {
+        return 'unsupported';
+      }
+
+      const yanked = mgr.yankHeadless(id);
+
+      if (yanked === null) {
+        return 'missing';
+      }
+
+      startHeadlessTurn(id, prompt);
+
+      return 'ok';
+    },
+    adoptSession: (id, cols, rows) => {
+      headlessRuns.get(id)?.stop();
+      headlessRuns.delete(id);
+
+      const adopted = mgr.adoptTerminal(id, cols, rows);
+
+      if (adopted === null) {
+        return false;
+      }
+
+      ptyDims.set(id, { cols, rows });
+
+      scheduleResize(id);
 
       return true;
     },
@@ -428,6 +526,14 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
       if (s === undefined) {
         return 'missing';
+      }
+
+      if (s.kind === 'jsonl') {
+        if (headlessRuns.has(sessionID)) {
+          return 'busy';
+        }
+
+        return startHeadlessTurn(sessionID, data.trimEnd()) ? 'ok' : 'dead';
       }
 
       if (s.pty === null) {

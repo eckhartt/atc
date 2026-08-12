@@ -24,7 +24,7 @@ export interface SessionDescriptor {
   readonly claudeId?: string;
   readonly namedBy: 'user' | 'auto' | 'agent';
   readonly createdAt: number;
-  readonly kind: 'pty';
+  readonly kind: 'pty' | 'jsonl';
   readonly alive: boolean;
 }
 
@@ -32,6 +32,7 @@ export interface Session {
   id: string;
   name: string;
   cwd: string;
+  kind: 'pty' | 'jsonl';
   pty: IPty | null;
   state: SessionState;
   unread: boolean;
@@ -124,6 +125,92 @@ export class SessionManager {
     this.statusPath = statusPath;
   }
 
+  // Hands a live terminal session off to a headless run: the terminal dies,
+  // the record lives on as a jsonl session and keeps its screen history.
+  yankHeadless(id: string): Session | null {
+    const s = this.sessions.find((x) => x.id === id);
+
+    if (!s || s.pty === null || s.claudeId === undefined) {
+      return null;
+    }
+
+    const pty = s.pty;
+
+    s.pty = null;
+    s.kind = 'jsonl';
+    s.state = 'running';
+    s.lastMsg = 'ejected to headless';
+
+    pty.kill();
+    this.onEvent('state', s);
+    this.emitChange();
+
+    return s;
+  }
+
+  // Adopts a headless session back into a terminal: a fresh PTY resumes the
+  // same agent session id.
+  adoptTerminal(id: string, cols: number, rows: number): Session | null {
+    const s = this.sessions.find((x) => x.id === id);
+
+    if (!s || s.pty !== null || s.claudeId === undefined) {
+      return null;
+    }
+
+    const plan = this.adapter.planSpawn({ prompt: '', resume: s.claudeId });
+
+    const pty = spawn(plan.bin, plan.args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd: s.cwd,
+      env: collectEnv({ ATC_SESSION_ID: s.id, ATC_SOCKET: socketPath }),
+    });
+
+    s.pty = pty;
+    s.kind = 'pty';
+    s.state = 'running';
+    s.lastMsg = 'adopted from headless';
+
+    pty.onData((d) => {
+      this.onOutput(s, d);
+    });
+
+    pty.onExit(() => {
+      s.pty = null;
+
+      if (s.kind === 'pty' && s.state !== 'exited') {
+        s.state = 'exited';
+        s.unread = this.focusedId !== s.id;
+        s.lastMsg = 'process exited';
+      }
+
+      this.onEvent('state', s);
+      this.emitChange();
+    });
+
+    this.onEvent('state', s);
+    this.emitChange();
+
+    return s;
+  }
+
+  // Reports a headless run's lifecycle into the session state machine.
+  updateSurfaceState(id: string, state: SessionState, msg: string) {
+    const s = this.sessions.find((x) => x.id === id);
+
+    if (!s || s.kind !== 'jsonl') {
+      return;
+    }
+
+    s.state = state;
+    s.lastMsg = msg;
+    s.unread = this.focusedId !== s.id;
+
+    this.onEvent('state', s);
+    this.emitChange();
+  }
+
   // The detector-stack screen tier reports through here: only flips between
   // running and needs_you — hook-driven done/exited states always win.
   updateAttention(id: string, state: 'needs_you' | 'running', msg: string) {
@@ -184,6 +271,7 @@ export class SessionManager {
       id,
       name,
       cwd,
+      kind: 'pty',
       pty,
       state: 'running',
       unread: false,
@@ -230,8 +318,8 @@ export class SessionManager {
       ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
       namedBy: s.namedBy,
       createdAt: s.createdAt,
-      kind: 'pty',
-      alive: s.pty !== null,
+      kind: s.kind,
+      alive: s.pty !== null || (s.kind === 'jsonl' && s.state !== 'exited'),
     }));
   }
 
