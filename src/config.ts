@@ -17,6 +17,7 @@ const configDir = join(homedir(), '.config', 'atc');
 
 export const stateDir = join(homedir(), '.local', 'state', 'atc');
 export const socketPath = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir, 'atc.sock');
+export const daemonSocketPath = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir, 'atc-daemon.sock');
 export const statusFile = join(stateDir, 'status.json');
 
 export function loadConfig(): Config {

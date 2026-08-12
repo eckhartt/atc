@@ -1,13 +1,31 @@
 // atc CLI entry: no subcommand opens the client TUI; `hook-report` and
 // `statusline` are the commands injected into wrangled sessions.
 import { defineCommand, runMain } from 'citty';
+import pkg from '../package.json';
 
 const main = defineCommand({
   meta: {
     name: 'atc',
+    version: pkg.version,
     description: 'Terminal control tower for Claude Code sessions',
   },
   subCommands: {
+    daemon: () =>
+      defineCommand({
+        meta: {
+          name: 'daemon',
+          description: 'Run the atc daemon in the foreground',
+        },
+        async run() {
+          const daemon = await import('./daemon');
+          const config = await import('./config');
+
+          daemon.startDaemon({
+            socketPath: config.daemonSocketPath,
+            build: `atc/${pkg.version}`,
+          });
+        },
+      }),
     'hook-report': () =>
       defineCommand({
         meta: {
