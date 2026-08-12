@@ -48,7 +48,10 @@ All in `~/.local/state/atc/`:
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, and the spawn-directory history for the picker.             |
 | `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol. |
-| `daemon.pid`  | The daemon's pid, for operators and test harnesses that need to stop it.                                                                             |
+
+The daemon's pid file (`atc-daemon.pid`) lives beside its sockets in `$XDG_RUNTIME_DIR`, not in the
+state directory: a pid is only meaningful for the daemon owning those sockets, and a shared location
+would let one runtime's stale-daemon restart kill another runtime's healthy daemon.
 
 ## Recovery model
 

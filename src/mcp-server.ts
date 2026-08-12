@@ -104,7 +104,7 @@ const TOOLS: readonly MCPTool[] = [
  * stdout carries only JSON-RPC lines; the daemon is booted on demand.
  */
 export async function runMCPServer(build: string): Promise<void> {
-  const client = await bootDaemonClient(build);
+  const client = await bootDaemonClient();
 
   const decoder = new TextDecoder('utf-8');
 

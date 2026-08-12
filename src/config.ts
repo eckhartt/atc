@@ -21,7 +21,7 @@ export const daemonSocketPath = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir,
 export const statusFile = join(stateDir, 'status.json');
 export const dbFile = join(stateDir, 'atc.db');
 export const legacyFleetFile = join(stateDir, 'fleet.json');
-export const daemonPidFile = join(stateDir, 'daemon.pid');
+export const daemonPidFile = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir, 'atc-daemon.pid');
 
 export function loadConfig(): Config {
   mkdirSync(configDir, { recursive: true });

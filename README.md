@@ -44,6 +44,10 @@ fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches 
 | `K`             | overlay        | kill selected (confirm with `y`) — the entry stays revivable with `P`; a second `K` forgets it |
 | `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                          |
 
+Revive (`P`) and headless eject (`H`) resume the session from its saved transcript, so both need one
+to exist: a session killed before its first exchange has nothing on disk yet, and the overlay says
+so in its message column instead of resuming.
+
 Everything else is passed through to the focused Claude session, which owns the full screen. Fleet
 state renders inside Claude Code's own status line (injected via the same `--settings` file): your
 configured statusline runs first, and atc appends `▏● 2 need you: auth-bug`. atc draws its own
@@ -70,7 +74,8 @@ the Messages API from the daemon — export `ANTHROPIC_API_KEY` in the shell tha
 light it up. `atc mcp` exposes the fleet as MCP tools (list, spawn, drive, brief) to any MCP client,
 wrangled sessions included. Daemon state — the restorable fleet, spawn-dir history, and the
 hook-event trail — lives in `~/.local/state/atc/atc.db` (SQLite), next to `status.json` (read by the
-injected statusline) and `daemon.pid`.
+injected statusline); the daemon's pid file sits in `$XDG_RUNTIME_DIR/atc-daemon.pid`, beside its
+sockets.
 
 ## Crash safety
 

@@ -3,15 +3,21 @@ import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { daemonPidFile, daemonSocketPath } from './config';
 import { DaemonClient } from './daemon-client';
+import { getBuild } from './get-build';
 
 /**
  * Opens a handshaken client to the daemon, booting the daemon first when its
  * socket is absent. A daemon left running from an older build is restarted,
  * so a fresh client never talks to stale daemon code — the fleet stays
- * restorable afterwards through the usual cold-boot recovery.
+ * restorable afterwards through the usual cold-boot recovery. The expected
+ * build is read from disk on every attempt: a long-lived caller holding a
+ * build string from its own boot would otherwise restart daemons that are
+ * already current.
  */
-export async function bootDaemonClient(build: string): Promise<DaemonClient> {
+export async function bootDaemonClient(): Promise<DaemonClient> {
   for (let attempt = 0; attempt < 2; attempt++) {
+    const build = getBuild();
+
     const client = await openOrBootDaemon();
     const hello = await client.sendHello(build);
 
