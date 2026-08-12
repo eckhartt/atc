@@ -1,14 +1,35 @@
 import { spawn as spawnChild } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { daemonSocketPath } from './config';
+import { daemonPidFile, daemonSocketPath } from './config';
 import { DaemonClient } from './daemon-client';
 
 /**
  * Opens a handshaken client to the daemon, booting the daemon first when its
- * socket is absent — the first invocation on a machine brings the whole
- * stack up.
+ * socket is absent. A daemon left running from an older build is restarted,
+ * so a fresh client never talks to stale daemon code — the fleet stays
+ * restorable afterwards through the usual cold-boot recovery.
  */
 export async function bootDaemonClient(build: string): Promise<DaemonClient> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const client = await openOrBootDaemon();
+    const hello = await client.sendHello(build);
+
+    const daemonBuild = hello['daemon'];
+
+    if (daemonBuild === build || attempt > 0) {
+      return client;
+    }
+
+    client.stop();
+
+    await stopStaleDaemon();
+  }
+
+  throw new Error('the atc daemon could not be restarted');
+}
+
+async function openOrBootDaemon(): Promise<DaemonClient> {
   let opened = await tryOpenDaemon();
 
   if (opened === null) {
@@ -27,8 +48,6 @@ export async function bootDaemonClient(build: string): Promise<DaemonClient> {
     throw new Error('the atc daemon did not come up; try `atc daemon` for its output');
   }
 
-  await opened.sendHello(build);
-
   return opened;
 }
 
@@ -37,6 +56,38 @@ async function tryOpenDaemon(): Promise<DaemonClient | null> {
     return await DaemonClient.open(daemonSocketPath);
   } catch {
     return null;
+  }
+}
+
+async function stopStaleDaemon(): Promise<void> {
+  let pid = 0;
+
+  try {
+    pid = Number(readFileSync(daemonPidFile, 'utf8'));
+  } catch {
+    return;
+  }
+
+  if (!Number.isInteger(pid) || pid <= 1) {
+    return;
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return;
+  }
+
+  const deadline = Date.now() + 3000;
+
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+
+    await Bun.sleep(50);
   }
 }
 
