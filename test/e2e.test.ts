@@ -276,6 +276,44 @@ test('it narrows the overlay to sessions matching the slash filter', async () =>
   expect(ctx.read()).not.toInclude('alpha        ');
 });
 
+test('it preselects the focused session when the overlay opens', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnSession(ctx, pty, 'first');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
+
+  pty.write('n');
+
+  await ctx.waitFor('spawn: directory');
+
+  pty.write('\r');
+
+  await ctx.waitFor('spawn: name');
+
+  pty.write('second\r');
+
+  await ctx.waitFor('spawn: initial prompt');
+
+  ctx.reset();
+  pty.write('\r');
+
+  await ctx.waitFor('FAKE_CLAUDE_UP');
+
+  ctx.reset();
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('second');
+
+  expect(ctx.read()).toInclude('\u001B[7msecond');
+}, 15_000);
+
 test('it opens the key reference from the overlay and returns on esc', async () => {
   await using ctx = setupTest();
 

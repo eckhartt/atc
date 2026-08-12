@@ -217,9 +217,12 @@ function renderOverlay() {
 
 function openOverlay() {
   mode = 'overlay';
-  overlaySelected = 0;
   confirmKill = false;
   overlayFilter = null;
+
+  const focusedIndex = sortSessionViews(fleet).findIndex((s) => s.id === focusedID);
+
+  overlaySelected = Math.max(0, focusedIndex);
 
   stdout.write(ansi.clear);
 
