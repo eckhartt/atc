@@ -1,13 +1,19 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { stateDir } from "./config";
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
+import { stateDir } from './config';
 
-const historyFile = join(stateDir, "spawn-history.json");
+const historyFile = join(stateDir, 'spawn-history.json');
 
-export function loadHistory(): string[] {
+function loadHistory(): string[] {
   try {
-    return JSON.parse(readFileSync(historyFile, "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(historyFile, 'utf8'));
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((d): d is string => typeof d === 'string');
   } catch {
     return [];
   }
@@ -15,45 +21,69 @@ export function loadHistory(): string[] {
 
 export function recordSpawn(dir: string) {
   const hist = [dir, ...loadHistory().filter((d) => d !== dir)].slice(0, 50);
+
   writeFileSync(historyFile, JSON.stringify(hist, null, 2));
 }
 
 // Spawn-history first (most recently used), then zoxide's frecency list.
-export async function candidateDirs(): Promise<string[]> {
+export async function collectDirs(): Promise<string[]> {
   let zoxide: string[] = [];
+
   try {
-    const proc = Bun.spawn(["zoxide", "query", "-l"], { stdout: "pipe", stderr: "ignore" });
-    zoxide = (await new Response(proc.stdout).text()).split("\n").filter(Boolean);
+    const proc = Bun.spawn(['zoxide', 'query', '-l'], { stdout: 'pipe', stderr: 'ignore' });
+
+    const text = await new Response(proc.stdout).text();
+
+    zoxide = text.split('\n').filter((line) => line !== '');
   } catch {}
+
   const seen = new Set<string>();
-  const out: string[] = [];
+
+  const found: string[] = [];
+
   for (const d of [...loadHistory(), ...zoxide]) {
     if (!seen.has(d) && existsSync(d)) {
       seen.add(d);
-      out.push(d);
+      found.push(d);
     }
   }
-  if (out.length === 0) out.push(homedir());
-  return out;
+
+  if (found.length === 0) {
+    found.push(homedir());
+  }
+
+  return found;
 }
 
-export function fuzzyFilter(dirs: string[], filter: string): string[] {
-  if (!filter) return dirs;
+export function pickMatches(items: readonly string[], filter: string): string[] {
+  if (filter === '') {
+    return [...items];
+  }
+
   const f = filter.toLowerCase();
-  const scored = dirs
-    .map((d) => {
-      const base = basename(d).toLowerCase();
+
+  const scored = items
+    .map((item) => {
+      const base = basename(item).toLowerCase();
       let score = -1;
-      if (base.startsWith(f)) score = 0;
-      else if (base.includes(f)) score = 1;
-      else if (d.toLowerCase().includes(f)) score = 2;
-      return { d, score };
+
+      if (base.startsWith(f)) {
+        score = 0;
+      } else if (base.includes(f)) {
+        score = 1;
+      } else if (item.toLowerCase().includes(f)) {
+        score = 2;
+      }
+
+      return { item, score };
     })
     .filter((x) => x.score >= 0);
-  return scored.sort((a, b) => a.score - b.score).map((x) => x.d);
+
+  return scored.toSorted((a, b) => a.score - b.score).map((x) => x.item);
 }
 
-export function displayDir(d: string): string {
+export function formatDir(d: string): string {
   const home = homedir();
-  return d.startsWith(home) ? "~" + d.slice(home.length) : d;
+
+  return d.startsWith(home) ? `~${d.slice(home.length)}` : d;
 }

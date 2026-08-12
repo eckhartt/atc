@@ -1,7 +1,8 @@
-import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { socketPath, stateDir } from "./config";
+import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { socketPath, stateDir } from './config';
+import { isRecord } from './report';
 
 export interface HookEvent {
   atcId: string;
@@ -13,9 +14,10 @@ export interface HookEvent {
 // The user's own settings are untouched; these hooks only exist in sessions
 // atc spawns, and identify themselves via ATC_SESSION_ID in the env.
 export function writeHookSettings(): string {
-  const reporter = join(import.meta.dir, "hook-report.ts");
+  const reporter = join(import.meta.dir, 'hook-report.ts');
   const cmd = `"${process.execPath}" "${reporter}"`;
-  const entry = [{ hooks: [{ type: "command", command: cmd, timeout: 5 }] }];
+  const entry = [{ hooks: [{ type: 'command', command: cmd, timeout: 5 }] }];
+
   const settings = {
     hooks: {
       // SessionStart carries the session id at spawn/resume time, before any
@@ -28,37 +30,51 @@ export function writeHookSettings(): string {
       SessionEnd: entry,
     },
   };
+
   // Fleet status renders inside Claude Code's own status line; the injected
   // command chains the user's configured statusline first, so mirror their
   // padding.
   let padding = 0;
+
   try {
-    const user = JSON.parse(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8"));
-    if (typeof user?.statusLine?.padding === "number") padding = user.statusLine.padding;
+    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    const raw = readFileSync(settingsPath, 'utf8');
+    const user: unknown = JSON.parse(raw);
+    const statusLine = isRecord(user) ? user['statusLine'] : undefined;
+    const userPadding = isRecord(statusLine) ? statusLine['padding'] : undefined;
+
+    if (typeof userPadding === 'number') {
+      padding = userPadding;
+    }
   } catch {}
+
   const statusline = {
-    type: "command",
-    command: `"${process.execPath}" "${join(import.meta.dir, "statusline.ts")}"`,
+    type: 'command',
+    command: `"${process.execPath}" "${join(import.meta.dir, 'statusline.ts')}"`,
     padding,
   };
 
-  const file = join(stateDir, "hook-settings.json");
+  const file = join(stateDir, 'hook-settings.json');
+
   writeFileSync(file, JSON.stringify({ ...settings, statusLine: statusline }, null, 2));
+
   return file;
 }
 
 // Debug trail for state-machine issues: one JSON line per received hook event.
-const eventLog = join(stateDir, "events.log");
+const eventLog = join(stateDir, 'events.log');
+
 export function logEvent(e: HookEvent) {
   const line = {
     ts: new Date().toISOString(),
     atcId: e.atcId,
     event: e.event,
-    message: e.payload?.message,
-    session_id: e.payload?.session_id,
+    message: e.payload['message'],
+    session_id: e.payload['session_id'],
   };
+
   try {
-    appendFileSync(eventLog, JSON.stringify(line) + "\n");
+    appendFileSync(eventLog, `${JSON.stringify(line)}\n`);
   } catch {}
 }
 
@@ -66,22 +82,41 @@ export function startHookServer(onEvent: (e: HookEvent) => void) {
   try {
     unlinkSync(socketPath);
   } catch {}
+
   return Bun.listen<string>({
     unix: socketPath,
     socket: {
       data(socket, buf) {
-        const buffered = (socket.data ?? "") + buf.toString();
-        const lines = buffered.split("\n");
-        socket.data = lines.pop() ?? "";
+        const buffered = (socket.data ?? '') + buf.toString();
+        const lines = buffered.split('\n');
+
+        socket.data = lines.pop() ?? '';
+
         for (const line of lines) {
-          if (!line.trim()) continue;
+          if (line.trim() === '') {
+            continue;
+          }
+
           try {
-            onEvent(JSON.parse(line));
+            const parsed: unknown = JSON.parse(line);
+
+            if (
+              isRecord(parsed) &&
+              typeof parsed['atcId'] === 'string' &&
+              typeof parsed['event'] === 'string' &&
+              isRecord(parsed['payload'])
+            ) {
+              onEvent({
+                atcId: parsed['atcId'],
+                event: parsed['event'],
+                payload: parsed['payload'],
+              });
+            }
           } catch {}
         }
       },
       open(socket) {
-        socket.data = "";
+        socket.data = '';
       },
       error() {},
     },

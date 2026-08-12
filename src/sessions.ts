@@ -1,11 +1,13 @@
-import { spawn, type IPty } from "bun-pty";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Config } from "./config";
-import { socketPath, stateDir, statusFile } from "./config";
-import type { HookEvent } from "./hooks";
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawn } from 'bun-pty';
+import type { IPty } from 'bun-pty';
+import type { Config } from './config';
+import { socketPath, stateDir, statusFile } from './config';
+import type { HookEvent } from './hooks';
+import { isRecord } from './report';
 
-export type SessionState = "running" | "needs_you" | "done" | "exited";
+export type SessionState = 'running' | 'needs_you' | 'done' | 'exited';
 
 export interface Session {
   id: string;
@@ -16,9 +18,10 @@ export interface Session {
   unread: boolean;
   lastMsg: string;
   claudeId?: string;
+
   // who last named this session: claude /rename beats everything, a
   // user-typed spawn name beats auto-summaries, defaults track claude.
-  namedBy: "user" | "auto" | "claude";
+  namedBy: 'user' | 'auto' | 'claude';
   createdAt: number;
 }
 
@@ -30,26 +33,57 @@ export interface FleetEntry {
   claudeId: string;
 }
 
-const fleetFile = join(stateDir, "fleet.json");
+const fleetFile = join(stateDir, 'fleet.json');
 
 export function loadFleet(): FleetEntry[] {
   try {
-    return JSON.parse(readFileSync(fleetFile, "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(fleetFile, 'utf8'));
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(
+      (entry): entry is FleetEntry =>
+        isRecord(entry) &&
+        typeof entry['name'] === 'string' &&
+        typeof entry['cwd'] === 'string' &&
+        typeof entry['claudeId'] === 'string',
+    );
   } catch {
     return [];
   }
 }
 
+function collectEnv(extra: Readonly<Record<string, string>>): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+
+  return { ...env, ...extra };
+}
+
 export class SessionManager {
   sessions: Session[] = [];
+
   focusedId: string | null = null;
+
   onOutput: (s: Session, data: string) => void = () => {};
+
   onChange: () => void = () => {};
 
-  constructor(
-    private config: Config,
-    private settingsFile: string,
-  ) {}
+  private readonly config: Config;
+
+  private readonly settingsFile: string;
+
+  constructor(config: Config, settingsFile: string) {
+    this.config = config;
+    this.settingsFile = settingsFile;
+  }
 
   get focused(): Session | null {
     return this.sessions.find((s) => s.id === this.focusedId) ?? null;
@@ -64,181 +98,268 @@ export class SessionManager {
     cols: number,
     rows: number,
     resume: boolean | string = false,
-    namedBy: "user" | "auto" = "auto",
+    namedBy: 'user' | 'auto' = 'auto',
   ): Session {
     const id = `s${++counter}-${Date.now().toString(36)}`;
+
     const args = [
       ...this.config.claudeArgs,
-      "--settings",
+      '--settings',
       this.settingsFile,
-      ...(resume === true ? ["--resume"] : []),
-      ...(typeof resume === "string" ? ["--resume", resume] : []),
-      ...(prompt ? [prompt] : []),
+      ...(resume === true ? ['--resume'] : []),
+      ...(typeof resume === 'string' ? ['--resume', resume] : []),
+      ...(prompt === '' ? [] : [prompt]),
     ];
+
     const pty = spawn(this.config.claudeBin, args, {
-      name: "xterm-256color",
+      name: 'xterm-256color',
       cols,
       rows,
       cwd,
-      env: {
-        ...(process.env as Record<string, string>),
-        ATC_SESSION_ID: id,
-        ATC_SOCKET: socketPath,
-      },
+      env: collectEnv({ ATC_SESSION_ID: id, ATC_SOCKET: socketPath }),
     });
+
+    let initialMsg = prompt;
+
+    if (initialMsg === '') {
+      initialMsg = resume === false ? 'started' : 'adopting…';
+    }
+
     const session: Session = {
       id,
       name,
       cwd,
       pty,
-      state: "running",
+      state: 'running',
       unread: false,
-      lastMsg: prompt || (resume ? "adopting…" : "started"),
-      claudeId: typeof resume === "string" ? resume : undefined,
+      lastMsg: initialMsg,
+      ...(typeof resume === 'string' ? { claudeId: resume } : {}),
       namedBy,
       createdAt: Date.now(),
     };
-    pty.onData((d) => this.onOutput(session, d));
+
+    pty.onData((d) => {
+      this.onOutput(session, d);
+    });
+
     pty.onExit(() => {
       session.pty = null;
-      if (session.state !== "exited") {
-        session.state = "exited";
+
+      if (session.state !== 'exited') {
+        session.state = 'exited';
         session.unread = this.focusedId !== session.id;
-        session.lastMsg = "process exited";
+        session.lastMsg = 'process exited';
       }
-      this.changed();
+
+      this.emitChange();
     });
+
     this.sessions.push(session);
-    this.saveFleet();
-    this.saveStatus();
+    this.writeFleet();
+    this.writeStatus();
+
     return session;
   }
 
-  handleHook(e: HookEvent) {
+  applyHook(e: HookEvent) {
     const s = this.sessions.find((x) => x.id === e.atcId);
-    if (!s) return;
+
+    if (!s) {
+      return;
+    }
+
     const focused = this.focusedId === s.id;
+    const sessionId = e.payload['session_id'];
     let dirty = false;
-    if (typeof e.payload.session_id === "string" && s.claudeId !== e.payload.session_id) {
-      s.claudeId = e.payload.session_id;
-      this.saveFleet();
+
+    if (typeof sessionId === 'string' && s.claudeId !== sessionId) {
+      s.claudeId = sessionId;
+
+      this.writeFleet();
+
       dirty = true;
     }
+
+    const transcript = e.payload['transcript_path'];
+
     if (
-      typeof e.payload.transcript_path === "string" &&
-      ["SessionStart", "UserPromptSubmit", "Stop"].includes(e.event)
+      typeof transcript === 'string' &&
+      ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(e.event)
     ) {
-      void this.refreshName(s, e.payload.transcript_path);
+      void this.refreshName(s, transcript);
     }
+
     switch (e.event) {
-      case "SessionStart":
-        if (s.lastMsg === "adopting…") {
-          s.lastMsg = "adopted";
+      case 'SessionStart': {
+        if (s.lastMsg === 'adopting…') {
+          s.lastMsg = 'adopted';
           dirty = true;
         }
+
         break;
-      case "Notification":
-        s.state = "needs_you";
+      }
+      case 'Notification': {
+        const message = e.payload['message'];
+
+        s.state = 'needs_you';
         s.unread = !focused;
-        s.lastMsg = String(e.payload.message ?? "needs input");
+        s.lastMsg = typeof message === 'string' && message !== '' ? message : 'needs input';
         dirty = true;
         break;
-      case "Stop":
-        s.state = "done";
+      }
+      case 'Stop': {
+        s.state = 'done';
         s.unread = !focused;
-        s.lastMsg = "turn done";
+        s.lastMsg = 'turn done';
         dirty = true;
         break;
-      case "UserPromptSubmit":
-        s.state = "running";
+      }
+      case 'UserPromptSubmit': {
+        const prompt = e.payload['prompt'];
+        const preview = typeof prompt === 'string' ? prompt.slice(0, 80) : '';
+
+        s.state = 'running';
         s.unread = false;
-        s.lastMsg = String(e.payload.prompt ?? "").slice(0, 80) || "working";
+        s.lastMsg = preview === '' ? 'working' : preview;
         dirty = true;
         break;
-      case "SessionEnd":
-        s.state = "exited";
+      }
+      case 'SessionEnd': {
+        s.state = 'exited';
         s.unread = false;
-        s.lastMsg = "session ended";
+        s.lastMsg = 'session ended';
         dirty = true;
         break;
+      }
+
       // Statusline heartbeats only matter for the claudeId capture above.
     }
-    if (dirty) this.changed();
+
+    if (dirty) {
+      this.emitChange();
+    }
   }
 
   // Claude is the naming authority: /rename writes custom-title lines to the
   // transcript, auto-summaries write summary lines. Pull the freshest.
   private async refreshName(s: Session, transcript: string) {
     try {
-      const proc = Bun.spawn(
-        ["grep", "-E", "\"type\":\"(custom-title|summary)\"", transcript],
-        { stdout: "pipe", stderr: "ignore" },
-      );
+      const proc = Bun.spawn(['grep', '-E', '"type":"(custom-title|summary)"', transcript], {
+        stdout: 'pipe',
+        stderr: 'ignore',
+      });
+
       const text = await new Response(proc.stdout).text();
+
       let title: string | undefined;
       let summary: string | undefined;
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
+
+      for (const line of text.split('\n')) {
+        if (line.trim() === '') {
+          continue;
+        }
+
         try {
-          const j = JSON.parse(line);
-          if (j.type === "custom-title" && typeof j.customTitle === "string") title = j.customTitle;
-          if (j.type === "summary" && typeof j.summary === "string") summary = j.summary;
+          const parsed: unknown = JSON.parse(line);
+
+          if (!isRecord(parsed)) {
+            continue;
+          }
+
+          const customTitle = parsed['customTitle'];
+          const summaryText = parsed['summary'];
+
+          if (parsed['type'] === 'custom-title' && typeof customTitle === 'string') {
+            title = customTitle;
+          }
+
+          if (parsed['type'] === 'summary' && typeof summaryText === 'string') {
+            summary = summaryText;
+          }
         } catch {}
       }
-      const next = title ?? (s.namedBy !== "user" ? summary : undefined);
-      if (next && next !== s.name) {
+
+      const next = title ?? (s.namedBy === 'user' ? undefined : summary);
+
+      if (next !== undefined && next !== '' && next !== s.name) {
         s.name = next;
-        if (title) s.namedBy = "claude";
-        this.saveFleet();
-        this.changed();
+
+        if (title !== undefined) {
+          s.namedBy = 'claude';
+        }
+
+        this.writeFleet();
+        this.emitChange();
       }
     } catch {}
   }
 
   // Shell command that re-opens this session outside atc (or anywhere).
-  resumeCommand(id: string): string | null {
+  buildResumeCommand(id: string): string | null {
     const s = this.sessions.find((x) => x.id === id);
-    if (!s) return null;
-    const resume = s.claudeId ? `claude --resume ${s.claudeId}` : "claude --resume";
-    return `cd '${s.cwd.replace(/'/g, `'\\''`)}' && ${resume}`;
+
+    if (!s) {
+      return null;
+    }
+
+    const resume = s.claudeId === undefined ? 'claude --resume' : `claude --resume ${s.claudeId}`;
+    const quoted = s.cwd.replaceAll("'", String.raw`'\''`);
+
+    return `cd '${quoted}' && ${resume}`;
   }
 
   ack(id: string) {
     const s = this.sessions.find((x) => x.id === id);
-    if (s) s.unread = false;
-    this.changed();
+
+    if (s) {
+      s.unread = false;
+    }
+
+    this.emitChange();
   }
 
   kill(id: string) {
     const s = this.sessions.find((x) => x.id === id);
-    if (!s) return;
+
+    if (!s) {
+      return;
+    }
+
     if (s.pty) {
       s.pty.kill();
+
       s.pty = null;
-      s.state = "exited";
-      s.lastMsg = "killed";
+      s.state = 'exited';
+      s.lastMsg = 'killed';
     } else {
       this.sessions = this.sessions.filter((x) => x.id !== id);
-      if (this.focusedId === id) this.focusedId = null;
+
+      if (this.focusedId === id) {
+        this.focusedId = null;
+      }
     }
-    this.saveFleet();
-    this.changed();
+
+    this.writeFleet();
+    this.emitChange();
   }
 
   killAll() {
-    for (const s of this.sessions) s.pty?.kill();
+    for (const s of this.sessions) {
+      s.pty?.kill();
+    }
   }
 
-  private changed() {
-    this.saveStatus();
+  private emitChange() {
+    this.writeStatus();
     this.onChange();
   }
 
   // Consumed by the injected statusline command so wrangled sessions render
   // fleet state inside Claude Code's own status line.
-  saveStatus() {
-    const c = this.counts();
-    const urgent = this.sorted().find((s) => s.state === "needs_you");
+  writeStatus() {
+    const c = this.countStates();
+    const urgent = this.sortSessions().find((s) => s.state === 'needs_you');
+
     try {
       writeFileSync(statusFile, JSON.stringify({ ...c, urgent: urgent?.name ?? null }));
     } catch {}
@@ -247,30 +368,40 @@ export class SessionManager {
   // Persisted continuously so a crash (or quit) leaves a restorable fleet.
   // Deliberate kills rewrite the file; unexpected session/atc deaths do not,
   // so the last known fleet survives for `R` restore.
-  saveFleet() {
-    const fleet: FleetEntry[] = this.sessions
-      .filter((s) => s.pty && s.claudeId)
-      .map((s) => ({ name: s.name, cwd: s.cwd, claudeId: s.claudeId! }));
+  writeFleet() {
+    const fleet: FleetEntry[] = [];
+
+    for (const s of this.sessions) {
+      if (s.pty !== null && s.claudeId !== undefined) {
+        fleet.push({ name: s.name, cwd: s.cwd, claudeId: s.claudeId });
+      }
+    }
+
     try {
       writeFileSync(fleetFile, JSON.stringify(fleet, null, 2));
     } catch {}
   }
 
-  counts() {
+  countStates() {
     const c = { needs_you: 0, running: 0, done: 0, exited: 0 };
-    for (const s of this.sessions) c[s.state]++;
+
+    for (const s of this.sessions) {
+      c[s.state]++;
+    }
+
     return c;
   }
 
   // Overlay order: who needs you first, then finished turns, then busy, then dead.
-  sorted(): Session[] {
+  sortSessions(): Session[] {
     const rank: Record<SessionState, number> = {
       needs_you: 0,
       done: 1,
       running: 2,
       exited: 3,
     };
-    return [...this.sessions].sort(
+
+    return [...this.sessions].toSorted(
       (a, b) => rank[a.state] - rank[b.state] || a.createdAt - b.createdAt,
     );
   }
