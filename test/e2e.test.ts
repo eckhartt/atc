@@ -143,6 +143,94 @@ test('spawn, hook status, overlay, kill, quit', async () => {
   expect(exited).toBe(true);
 });
 
+test('attaching a needs-you session clears its need state', async () => {
+  p = boot();
+
+  await waitFor('atc — control tower');
+  await spawnSession(p, 'needytest');
+
+  p.write('\u0000');
+
+  await waitFor('NEEDS YOU');
+
+  p.write('\r'); // attach the selected (needs-you) session
+
+  const statusPath = join(home, '.local', 'state', 'atc', 'status.json');
+  const start = Date.now();
+  let cleared = false;
+
+  while (Date.now() - start < 3000) {
+    const rawStatus = await Bun.file(statusPath)
+      .text()
+      .catch(() => '');
+
+    if (rawStatus.includes('"needs_you":0')) {
+      cleared = true;
+      break;
+    }
+
+    await Bun.sleep(50);
+  }
+
+  expect(cleared).toBe(true);
+});
+
+test('overlay slash filter narrows the session list', async () => {
+  p = boot();
+
+  await waitFor('atc — control tower');
+  await spawnSession(p, 'alpha');
+
+  p.write('\u0000');
+
+  await waitFor('NEEDS YOU');
+
+  p.write('\r'); // attach alpha, clearing its needs-you state
+
+  await Bun.sleep(200);
+
+  out = '';
+
+  p.write('\u0000');
+
+  await waitFor('sessions');
+
+  p.write('n'); // spawn second session from the overlay
+
+  await waitFor('spawn: directory');
+
+  p.write('\r');
+
+  await waitFor('spawn: name');
+
+  p.write('bravo\r');
+
+  await waitFor('spawn: initial prompt');
+
+  p.write('\r');
+
+  await waitFor('FAKE_CLAUDE_UP');
+
+  out = '';
+
+  p.write('\u0000');
+
+  await waitFor('bravo');
+
+  p.write('/');
+
+  await waitFor('type to filter');
+
+  out = '';
+
+  p.write('brav');
+
+  await waitFor('/ brav');
+  await waitFor('bravo');
+
+  expect(out).not.toContain('alpha ');
+});
+
 test('adopt passes --resume and yank copies resume command', async () => {
   p = boot();
 
@@ -167,7 +255,7 @@ test('adopt passes --resume and yank copies resume command', async () => {
   p.write('\u0000');
 
   await waitFor('need you: adopted');
-  await waitFor('yank cmd');
+  await waitFor('y yank');
 
   out = '';
 

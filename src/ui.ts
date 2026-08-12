@@ -138,6 +138,7 @@ export interface OverlayView {
   selected: number;
   confirmKill: boolean;
   confirmQuit: boolean;
+  filter: string | null;
 }
 
 export function drawOverlay(view: OverlayView) {
@@ -145,7 +146,9 @@ export function drawOverlay(view: OverlayView) {
   const rowsList: Row[] = [boxTop(width, 'sessions')];
 
   if (view.sessions.length === 0) {
-    rowsList.push(dimRow(width, 'no sessions — n to spawn'));
+    const empty = view.filter === null ? 'no sessions — n to spawn' : 'no matches';
+
+    rowsList.push(dimRow(width, empty));
   }
 
   for (const [i, s] of view.sessions.entries()) {
@@ -164,7 +167,21 @@ export function drawOverlay(view: OverlayView) {
 
   rowsList.push(boxDivider(width));
 
-  let hint = '↑↓/jk · ⏎ attach · a ack · n new · r adopt · y yank cmd · Y eject · K kill · q quit';
+  if (view.filter !== null) {
+    const pattern = truncate(view.filter, width - 8);
+
+    rowsList.push(
+      boxRow(width, `/ ${pattern}${ESC}[93m█${ESC}[0m`, 2 + pattern.length + 1),
+      boxDivider(width),
+    );
+  }
+
+  let hint =
+    '↑↓/jk · ⏎ attach · / filter · a ack · n new · r adopt · y yank · Y eject · K kill · q quit';
+
+  if (view.filter !== null) {
+    hint = 'type to filter · ↑↓ move · ⏎ attach · esc clear';
+  }
 
   if (view.confirmKill) {
     hint = 'kill selected session? y / n';

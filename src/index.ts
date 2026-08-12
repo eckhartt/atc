@@ -64,6 +64,17 @@ function jiggle(s: Session) {
 function attach(s: Session) {
   mgr.focusedId = s.id;
   s.unread = false;
+
+  // Attaching answers the attention request: swapping to a session that
+  // needs you clears its need state (a still-pending prompt re-flags it via
+  // the next Notification).
+  if (s.state === 'needs_you') {
+    s.state = 'running';
+    s.lastMsg = 'attached';
+  }
+
+  mgr.writeStatus();
+
   mode = 'attached';
 
   stdout.write(ansi.clear + ansi.showCursor);
@@ -90,12 +101,32 @@ function toBase() {
   scheduleStatus();
 }
 
+// fzf-style overlay search: null when inactive, the pattern while active.
+let overlayFilter: string | null = null;
+
+function pickOverlaySessions(): Session[] {
+  const sorted = mgr.sortSessions();
+
+  if (overlayFilter === null || overlayFilter === '') {
+    return sorted;
+  }
+
+  const f = overlayFilter.toLowerCase();
+
+  return sorted.filter((s) => `${s.name} ${formatDir(s.cwd)}`.toLowerCase().includes(f));
+}
+
 function renderOverlay() {
+  const sessions = pickOverlaySessions();
+
+  overlaySelected = Math.max(0, Math.min(overlaySelected, sessions.length - 1));
+
   drawOverlay({
-    sessions: mgr.sortSessions(),
+    sessions,
     selected: overlaySelected,
     confirmKill,
     confirmQuit,
+    filter: overlayFilter,
   });
 
   scheduleStatus();
@@ -106,6 +137,7 @@ function openOverlay() {
   overlaySelected = 0;
   confirmKill = false;
   confirmQuit = false;
+  overlayFilter = null;
 
   stdout.write(ansi.clear);
 
@@ -286,9 +318,73 @@ function isDown(buf: Buffer): boolean {
   return buf.toString() === '\u001B[B' || buf.toString() === '\u001BOB';
 }
 
+function applyOverlayFilterKey(buf: Buffer): boolean {
+  if (overlayFilter === null) {
+    return false;
+  }
+
+  // esc clears the filter but stays in the overlay; enter falls through to
+  // the normal handler so it attaches the selected match.
+  if (buf[0] === KEY.esc && buf.length === 1) {
+    overlayFilter = null;
+
+    stdout.write(ansi.clear);
+
+    renderOverlay();
+
+    return true;
+  }
+
+  if (buf[0] === KEY.backspace) {
+    overlayFilter = overlayFilter.slice(0, -1);
+
+    stdout.write(ansi.clear);
+
+    renderOverlay();
+
+    return true;
+  }
+
+  if (buf[0] === KEY.ctrlU) {
+    overlayFilter = '';
+
+    stdout.write(ansi.clear);
+
+    renderOverlay();
+
+    return true;
+  }
+
+  if (buf[0] === KEY.enter || isUp(buf) || isDown(buf) || buf[0] === KEY.ctrlSpace) {
+    return false;
+  }
+
+  const text = buf.toString();
+  let printable = text.length > 0;
+
+  for (const c of text) {
+    if (c < ' ' || c === '\u007F') {
+      printable = false;
+      break;
+    }
+  }
+
+  if (printable) {
+    overlayFilter += text;
+
+    stdout.write(ansi.clear);
+
+    renderOverlay();
+
+    return true;
+  }
+
+  return true;
+}
+
 function applyOverlayKey(buf: Buffer) {
-  const sorted = mgr.sortSessions();
-  const sel = sorted[overlaySelected];
+  const filtered = pickOverlaySessions();
+  const sel = filtered[overlaySelected];
 
   if (confirmKill || confirmQuit) {
     if (buf[0] === 0x79 /* y */) {
@@ -309,6 +405,21 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
+  if (applyOverlayFilterKey(buf)) {
+    return;
+  }
+
+  if (buf.toString() === '/') {
+    overlayFilter = '';
+    overlaySelected = 0;
+
+    stdout.write(ansi.clear);
+
+    renderOverlay();
+
+    return;
+  }
+
   if (buf[0] === KEY.ctrlSpace || (buf[0] === KEY.esc && buf.length === 1)) {
     toBase();
 
@@ -316,7 +427,7 @@ function applyOverlayKey(buf: Buffer) {
   }
 
   if (isDown(buf) || buf.toString() === 'j') {
-    overlaySelected = Math.min(sorted.length - 1, overlaySelected + 1);
+    overlaySelected = Math.min(filtered.length - 1, overlaySelected + 1);
 
     renderOverlay();
 
