@@ -55,16 +55,32 @@ Status: done
 - Detector-stack interface in the adapter (hooks first, screen-state heuristics as the universal
   fallback) so non-Claude agents become an adapter, not a refactor.
 
-## Phase 5 — futures
+## Phase 5 — inbox intelligence, MCP, and headless handoff
+
+Status: in progress
+
+Build order:
+
+1. Inbox intelligence: an on-demand fleet brief — the daemon summarizes what every session did and
+   which ones actually need a human, rendered in the client on a keypress. Uses the Messages API
+   directly; the raw material is session state plus each session's last reported activity.
+2. MCP exposure: `atc mcp` bridges stdio to the daemon protocol so any MCP client — including a
+   wrangled session — can list, spawn, and drive the fleet. Issue dispatch then needs no feature at
+   all: it is a session looping over an issue source and calling the spawn tool.
+3. Headless handoff: eject a PTY session into a headless Agent SDK session (same Claude session id,
+   auto permission mode) to keep working unattended, and adopt it back into a PTY when it needs a
+   human. The Agent SDK and the CLI share the session store; the handoff is sequential, so the two
+   never run the same session concurrently.
+
+## Phase 6 — futures
 
 Status: unscoped
 
 Named so earlier phases don't foreclose them; each gets its own scoping when it becomes real:
 
-- SDK surface: headless Agent SDK sessions in the same inbox as PTY sessions, with structured
-  permission approval from any client.
 - Remote transport: the same protocol over TCP+auth or an SSH tunnel (work-machine daemon, laptop
   client).
-- MCP exposure: daemon verbs as MCP tools so sessions can query and drive the fleet.
+- Structured permission approval from any client (the protocol already carries `respondable`;
+  dormant until a gated workflow wants it).
 - Codex (or other CLI agent) adapter.
 - Windows support beyond WSL (ConPTY via the PTY provider interface).
