@@ -3,15 +3,16 @@ import { basename } from 'node:path';
 import type { AgentAdapter } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
-import { logEvent, startHookServer } from './hooks';
+import { startHookServer } from './hooks';
 import { OutboundQueue } from './outbound-queue';
 import type { SocketWriter } from './outbound-queue';
 import { PermissionRegistry } from './permission-registry';
 import type { AnswerResult } from './permission-registry';
 import { MAX_CHUNK, MAX_LINE, PROTOCOL_V, decodeMessage, encodeMessage } from './protocol';
 import type { ErrorCode, EventMsg, RequestMsg } from './protocol';
-import { SessionManager, loadFleet } from './sessions';
+import { SessionManager } from './sessions';
 import type { SessionDescriptor, SessionState } from './sessions';
+import { StateStore } from './state-store';
 
 export interface DaemonOptions {
   readonly socketPath: string;
@@ -20,6 +21,11 @@ export interface DaemonOptions {
   // Build string sent in the handshake and in mismatch errors, e.g. "atc/0.1.0".
   readonly build: string;
   readonly adapter: AgentAdapter;
+
+  // SQLite path for daemon state; a fleet.json at legacyFleetPath seeds the
+  // fleet table once so upgrading keeps the restorable fleet.
+  readonly dbPath: string;
+  readonly legacyFleetPath?: string;
 
   // Outbound queue capacity per client; small values force desync in tests.
   readonly queueBytes?: number;
@@ -39,7 +45,8 @@ export interface DaemonHandle {
  * or hostile peer.
  */
 export function startDaemon(opts: DaemonOptions): DaemonHandle {
-  const mgr = new SessionManager(opts.adapter);
+  const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
+  const mgr = new SessionManager(opts.adapter, store);
   const clients = new Set<Connection>();
 
   const emitEvent = (event: EventMsg) => {
@@ -216,7 +223,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
 
   const reporter = startHookServer((e) => {
     if (e.event !== 'Statusline') {
-      logEvent(e);
+      store.recordEvent(e);
     }
 
     mgr.applyHook(e);
@@ -225,10 +232,12 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const ctx: DaemonContext = {
     build: opts.build,
     collectSessions: () => mgr.collectDescriptors(),
+    collectSpawnDirs: () => store.collectSpawnDirs(),
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
 
       ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
+      store.recordSpawnDir(p.cwd);
 
       return getDescriptor(mgr, s.id);
     },
@@ -311,7 +320,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     restoreFleet: (cols, rows) => {
       let restored = 0;
 
-      for (const entry of loadFleet()) {
+      for (const entry of store.loadFleet()) {
         const live = mgr.sessions.some((s) => s.pty !== null && s.claudeId === entry.claudeId);
 
         if (live) {
@@ -364,6 +373,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       server.stop(true);
       reporter.stop(true);
       mgr.killAll();
+      store.stop();
     },
   };
 }
@@ -391,6 +401,7 @@ interface SpawnParams {
 interface DaemonContext {
   readonly build: string;
   readonly collectSessions: () => SessionDescriptor[];
+  readonly collectSpawnDirs: () => string[];
   readonly spawnSession: (p: SpawnParams) => SessionDescriptor;
   readonly killSession: (id: string) => boolean;
   readonly ackSession: (id: string) => boolean;
@@ -552,6 +563,11 @@ class Connection {
       }
       case 'session.list': {
         this.sendOk(req.id, { sessions: this.ctx.collectSessions() });
+
+        return;
+      }
+      case 'dirs.list': {
+        this.sendOk(req.id, { dirs: this.ctx.collectSpawnDirs() });
 
         return;
       }

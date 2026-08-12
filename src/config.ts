@@ -19,6 +19,8 @@ export const stateDir = join(homedir(), '.local', 'state', 'atc');
 export const socketPath = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir, 'atc.sock');
 export const daemonSocketPath = join(process.env['XDG_RUNTIME_DIR'] ?? stateDir, 'atc-daemon.sock');
 export const statusFile = join(stateDir, 'status.json');
+export const dbFile = join(stateDir, 'atc.db');
+export const legacyFleetFile = join(stateDir, 'fleet.json');
 
 export function loadConfig(): Config {
   mkdirSync(configDir, { recursive: true });

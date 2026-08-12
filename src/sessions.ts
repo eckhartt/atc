@@ -46,12 +46,26 @@ export interface Session {
 let counter = 0;
 
 export interface FleetEntry {
-  name: string;
-  cwd: string;
-  claudeId: string;
+  readonly name: string;
+  readonly cwd: string;
+  readonly claudeId: string;
 }
 
 const fleetFile = join(stateDir, 'fleet.json');
+
+export interface FleetStore {
+  readonly loadFleet: () => FleetEntry[];
+  readonly writeFleet: (entries: readonly FleetEntry[]) => void;
+}
+
+const jsonFleetStore: FleetStore = {
+  loadFleet: () => loadFleet(),
+  writeFleet: (entries) => {
+    try {
+      writeFileSync(fleetFile, JSON.stringify(entries, null, 2));
+    } catch {}
+  },
+};
 
 export function loadFleet(): FleetEntry[] {
   try {
@@ -98,8 +112,11 @@ export class SessionManager {
 
   private readonly adapter: AgentAdapter;
 
-  constructor(adapter: AgentAdapter) {
+  private readonly store: FleetStore;
+
+  constructor(adapter: AgentAdapter, store: FleetStore = jsonFleetStore) {
     this.adapter = adapter;
+    this.store = store;
   }
 
   get focused(): Session | null {
@@ -365,9 +382,7 @@ export class SessionManager {
       }
     }
 
-    try {
-      writeFileSync(fleetFile, JSON.stringify(fleet, null, 2));
-    } catch {}
+    this.store.writeFleet(fleet);
   }
 
   countStates() {

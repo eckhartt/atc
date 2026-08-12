@@ -26,6 +26,7 @@ function setupDaemon(): string {
     reporterSocketPath: join(dir, 'reporter.sock'),
     build: 'atc/test-build',
     adapter: idleAdapter,
+    dbPath: join(dir, 'state.db'),
   });
 
   onTestFinished(() => {

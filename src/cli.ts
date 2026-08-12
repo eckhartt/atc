@@ -38,6 +38,8 @@ const main = defineCommand({
             reporterSocketPath: config.socketPath,
             build: `atc/${pkg.version}`,
             adapter: new claude.ClaudeAdapter(config.loadConfig()),
+            dbPath: config.dbFile,
+            legacyFleetPath: config.legacyFleetFile,
           });
         },
       }),
