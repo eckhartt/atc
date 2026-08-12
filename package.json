@@ -22,7 +22,8 @@
     "prepare": "command -v git > /dev/null 2>&1 && lefthook install --force || true"
   },
   "dependencies": {
-    "bun-pty": "0.4.10"
+    "bun-pty": "0.4.10",
+    "citty": "0.2.2"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.0",
