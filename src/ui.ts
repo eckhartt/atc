@@ -190,7 +190,7 @@ export function drawOverlay(view: OverlayView) {
   }
 
   let hint =
-    '↑↓/jk · ⏎ attach · / filter · a ack · n new · r adopt · y yank · Y eject · K kill · q quit';
+    '↑↓/jk · ⏎ attach · / filter · a ack · b brief · n new · r adopt · y yank · Y eject · K kill · q quit';
 
   if (view.filter !== null) {
     hint = 'type to filter · ↑↓ move · ⏎ attach · esc clear';
@@ -203,6 +203,54 @@ export function drawOverlay(view: OverlayView) {
   rowsList.push(dimRow(width, hint), boxBottom(width));
 
   drawBox(rowsList);
+}
+
+export interface BriefView {
+  readonly lines: readonly string[];
+  readonly hint: string;
+}
+
+export function drawBrief(view: BriefView) {
+  const width = Math.min(cols() - 4, 100);
+  const rowsList: Row[] = [boxTop(width, 'fleet brief')];
+
+  for (const line of view.lines.length === 0 ? ['(nothing to report)'] : view.lines) {
+    const wrapped = splitToWidth(line, width - 4);
+
+    for (const part of wrapped) {
+      rowsList.push(boxRow(width, part, part.length));
+    }
+  }
+
+  rowsList.push(boxDivider(width), dimRow(width, view.hint), boxBottom(width));
+
+  drawBox(rowsList);
+}
+
+function splitToWidth(line: string, max: number): string[] {
+  const clean = truncate(line, Number.MAX_SAFE_INTEGER);
+
+  if (clean.length <= max) {
+    return [clean];
+  }
+
+  const parts: string[] = [];
+  let rest = clean;
+
+  while (rest.length > max) {
+    const cut = rest.lastIndexOf(' ', max);
+    const at = cut > max / 2 ? cut : max;
+
+    parts.push(rest.slice(0, at));
+
+    rest = rest.slice(at).trimStart();
+  }
+
+  if (rest !== '') {
+    parts.push(rest);
+  }
+
+  return parts;
 }
 
 export interface PickerView {

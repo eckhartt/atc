@@ -8,9 +8,25 @@ import type { EventMsg } from './protocol';
 import { isRecord } from './report';
 import { countSessionStates, sortSessionViews } from './sessions';
 import type { SessionState } from './sessions';
-import { ansi, cols, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } from './ui';
+import {
+  ansi,
+  cols,
+  drawBrief,
+  drawHome,
+  drawOverlay,
+  drawPicker,
+  drawStatusBar,
+  rows,
+} from './ui';
 
-type Mode = 'home' | 'attached' | 'overlay' | 'picker-dir' | 'picker-name' | 'picker-prompt';
+type Mode =
+  | 'home'
+  | 'attached'
+  | 'overlay'
+  | 'brief'
+  | 'picker-dir'
+  | 'picker-name'
+  | 'picker-prompt';
 
 interface MirrorSession {
   id: string;
@@ -124,6 +140,47 @@ function toBase() {
   }
 
   scheduleStatus();
+}
+
+let briefLines: string[] = ['briefing…'];
+
+async function openBrief() {
+  mode = 'brief';
+  briefLines = ['briefing…'];
+
+  stdout.write(ansi.clear);
+
+  drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
+
+  try {
+    const answer = await client.sendRequest('fleet.brief');
+
+    const brief = answer['brief'];
+
+    briefLines = typeof brief === 'string' ? brief.split('\n') : ['brief came back empty'];
+  } catch (error) {
+    briefLines = [error instanceof Error ? error.message : String(error)];
+  }
+
+  if (mode === 'brief') {
+    stdout.write(ansi.clear);
+
+    drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
+  }
+}
+
+function applyBriefKey(buf: Buffer) {
+  const ch = buf.toString();
+
+  if (ch === 'r') {
+    void openBrief();
+
+    return;
+  }
+
+  if (buf[0] === KEY.esc || ch === 'b' || buf[0] === KEY.ctrlSpace || ch === 'q') {
+    openOverlay();
+  }
 }
 
 // fzf-style overlay search: null when inactive, the pattern while active.
@@ -591,6 +648,12 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
+  if (ch === 'b') {
+    void openBrief();
+
+    return;
+  }
+
   if (ch === 'r') {
     void openDirPicker(true);
 
@@ -860,6 +923,11 @@ process.stdin.on('data', (buf: Buffer) => {
 
       return;
     }
+    case 'brief': {
+      applyBriefKey(buf);
+
+      return;
+    }
     case 'picker-dir': {
       applyTextKey(
         buf,
@@ -956,6 +1024,12 @@ stdout.on('resize', () => {
     stdout.write(ansi.clear);
 
     renderOverlay();
+  }
+
+  if (mode === 'brief') {
+    stdout.write(ansi.clear);
+
+    drawBrief({ lines: briefLines, hint: 'esc/b back · r refresh' });
   }
 
   if (mode.startsWith('picker')) {

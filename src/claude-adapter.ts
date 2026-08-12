@@ -68,11 +68,21 @@ export class ClaudeAdapter implements AgentAdapter {
         return {
           ...base,
           kind: 'needs-input',
-          ...(typeof message === 'string' && message !== '' ? { message } : {}),
+          ...(typeof message === 'string' && message !== ''
+            ? { message, detail: truncateDetail(message) }
+            : {}),
         };
       }
       case 'Stop': {
-        return { ...named, kind: 'turn-done' };
+        const lastMessage = e.payload['last_assistant_message'];
+
+        return {
+          ...named,
+          kind: 'turn-done',
+          ...(typeof lastMessage === 'string' && lastMessage !== ''
+            ? { detail: truncateDetail(lastMessage) }
+            : {}),
+        };
       }
       case 'UserPromptSubmit': {
         const prompt = e.payload['prompt'];
@@ -81,7 +91,7 @@ export class ClaudeAdapter implements AgentAdapter {
         return {
           ...named,
           kind: 'prompt-submitted',
-          ...(preview === '' ? {} : { message: preview }),
+          ...(preview === '' ? {} : { message: preview, detail: truncateDetail(preview) }),
         };
       }
       case 'SessionEnd': {
@@ -206,6 +216,10 @@ function writeHookSettings(): string {
   writeFileSync(file, JSON.stringify({ ...settings, statusLine: statusline }, null, 2));
 
   return file;
+}
+
+function truncateDetail(text: string): string {
+  return text.length <= 600 ? text : `${text.slice(0, 599)}…`;
 }
 
 // Wrangled sessions invoke atc subcommands: under bun the CLI entry path is

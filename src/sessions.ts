@@ -20,6 +20,7 @@ export interface SessionDescriptor {
   readonly state: SessionState;
   readonly unread: boolean;
   readonly lastMsg: string;
+  readonly lastDetail?: string;
   readonly claudeId?: string;
   readonly namedBy: 'user' | 'auto' | 'agent';
   readonly createdAt: number;
@@ -35,6 +36,7 @@ export interface Session {
   state: SessionState;
   unread: boolean;
   lastMsg: string;
+  lastDetail?: string;
   claudeId?: string;
 
   // who last named this session: the agent's own rename beats everything, a
@@ -224,6 +226,7 @@ export class SessionManager {
       state: s.state,
       unread: s.unread,
       lastMsg: s.lastMsg,
+      ...(s.lastDetail === undefined ? {} : { lastDetail: s.lastDetail }),
       ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
       namedBy: s.namedBy,
       createdAt: s.createdAt,
@@ -249,6 +252,10 @@ export class SessionManager {
       this.writeFleet();
 
       dirty = true;
+    }
+
+    if (ev.detail !== undefined) {
+      s.lastDetail = ev.detail;
     }
 
     if (ev.nameSource !== undefined) {

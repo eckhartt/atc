@@ -32,8 +32,10 @@ const main = defineCommand({
           const daemon = await import('./daemon');
           const config = await import('./config');
           const claude = await import('./claude-adapter');
+          const brief = await import('./fleet-brief');
 
           const handle = daemon.startDaemon({
+            briefLoader: (sessions) => brief.loadFleetBrief(sessions),
             socketPath: config.daemonSocketPath,
             reporterSocketPath: config.socketPath,
             build: `atc/${pkg.version}`,

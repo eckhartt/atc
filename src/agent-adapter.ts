@@ -18,6 +18,10 @@ export interface AdapterEvent {
   agentSessionID?: string;
   message?: string;
 
+  // Fuller activity text than message: what the agent last said or was
+  // asked, for briefing. Bounded by the adapter.
+  detail?: string;
+
   // Opaque handle the adapter can later pull a session name from.
   nameSource?: string;
 }
