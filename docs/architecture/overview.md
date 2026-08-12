@@ -18,8 +18,8 @@ terminal ──> atc (src/index.ts)
   pass through raw to the terminal; background output is discarded (Claude repaints on attach,
   forced by a resize jiggle).
 - There is no vt screen model yet. Attach fidelity relies on Claude Code redrawing itself on
-  SIGWINCH. This is the known MVP tradeoff; a daemon/client split with a per-session screen model is
-  the planned next architecture (to be specced separately).
+  SIGWINCH. This is the known MVP tradeoff; the [daemon architecture](./daemon.md) and its
+  [wire protocol](./protocol.md) replace it.
 - `src/sessions.ts` is the state machine: session states are `running`, `needs_you`, `done`,
   `exited`, each with an `unread` attention flag.
 

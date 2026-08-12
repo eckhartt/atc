@@ -6,8 +6,12 @@
 
 ## Architecture
 
-- [Overview](./architecture/overview.md) — what atc is, the process model, the Claude integration
-  contract, and the state files.
+- [Overview](./architecture/overview.md) — what atc is, the current process model, the Claude
+  integration contract, and the state files.
+- [Daemon](./architecture/daemon.md) — the target daemon/client architecture: process model,
+  listeners, screen model, surfaces and adapters, state.
+- [Protocol](./architecture/protocol.md) — the daemon/client wire protocol: NDJSON envelope, methods
+  and events, streaming, backpressure, permissions.
 
 ## Reference
 

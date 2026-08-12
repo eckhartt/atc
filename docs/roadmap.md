@@ -18,7 +18,8 @@ Status: not started
 
 ## Phase 2 — daemon/client split
 
-Status: not started
+Status: not started · design: [daemon](./architecture/daemon.md),
+[protocol](./architecture/protocol.md)
 
 - `atcd` owns PTYs, session state, and the hook socket; the TUI becomes a thin client speaking the
   wire protocol over a unix socket.
@@ -27,6 +28,16 @@ Status: not started
 - SQLite (`bun:sqlite`) replaces the JSON state files, except `status.json`, which stays as the
   statusline's read surface.
 - Fleet restore demotes to cold-boot recovery after daemon death.
+
+Build order inside the phase (sequence matters more than the wire format):
+
+1. Per-client outbound queue with short-write and `drain` handling, guarded by a loss test that
+   blasts a slow reader and asserts zero loss — Bun's `socket.write()` silently drops what the
+   kernel buffer won't take.
+2. Correlation ids and the error shape.
+3. Permission arbitration (first response wins, broadcast resolution, `already_answered`).
+4. Attach/streaming with the jiggle-repaint fallback; screen-model replay arrives in phase 3 with
+   zero wire changes.
 
 ## Phase 3 — screen model
 
