@@ -1,7 +1,8 @@
 import { basename } from 'node:path';
+import { ClaudeAdapter } from './claude-adapter';
 import { loadConfig } from './config';
 import { collectDirs, formatDir, pickMatches, recordSpawn } from './dirs';
-import { logEvent, startHookServer, writeHookSettings } from './hooks';
+import { logEvent, startHookServer } from './hooks';
 import { SessionManager, loadFleet } from './sessions';
 import type { Session } from './sessions';
 import { ansi, cols, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } from './ui';
@@ -9,9 +10,8 @@ import { ansi, cols, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } fr
 type Mode = 'home' | 'attached' | 'overlay' | 'picker-dir' | 'picker-name' | 'picker-prompt';
 
 const config = loadConfig();
-const settingsFile = writeHookSettings();
 
-const mgr = new SessionManager(config, settingsFile);
+const mgr = new SessionManager(new ClaudeAdapter(config));
 
 let mode: Mode = 'home';
 let overlaySelected = 0;

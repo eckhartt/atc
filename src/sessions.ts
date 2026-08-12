@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'bun-pty';
 import type { IPty } from 'bun-pty';
-import type { Config } from './config';
+import type { AgentAdapter } from './agent-adapter';
 import { socketPath, stateDir, statusFile } from './config';
 import type { HookEvent } from './hooks';
 import { isRecord } from './report';
@@ -19,9 +19,9 @@ export interface Session {
   lastMsg: string;
   claudeId?: string;
 
-  // who last named this session: claude /rename beats everything, a
-  // user-typed spawn name beats auto-summaries, defaults track claude.
-  namedBy: 'user' | 'auto' | 'claude';
+  // who last named this session: the agent's own rename beats everything, a
+  // user-typed spawn name beats auto-summaries.
+  namedBy: 'user' | 'auto' | 'agent';
   createdAt: number;
 }
 
@@ -76,21 +76,18 @@ export class SessionManager {
 
   onChange: () => void = () => {};
 
-  private readonly config: Config;
+  private readonly adapter: AgentAdapter;
 
-  private readonly settingsFile: string;
-
-  constructor(config: Config, settingsFile: string) {
-    this.config = config;
-    this.settingsFile = settingsFile;
+  constructor(adapter: AgentAdapter) {
+    this.adapter = adapter;
   }
 
   get focused(): Session | null {
     return this.sessions.find((s) => s.id === this.focusedId) ?? null;
   }
 
-  // resume: true opens claude's own session picker; a string resumes that
-  // specific claude session id (fleet restore).
+  // resume: true opens the agent's own session picker; a string resumes that
+  // specific agent session id (fleet restore).
   spawn(
     cwd: string,
     name: string,
@@ -101,17 +98,9 @@ export class SessionManager {
     namedBy: 'user' | 'auto' = 'auto',
   ): Session {
     const id = `s${++counter}-${Date.now().toString(36)}`;
+    const plan = this.adapter.planSpawn({ prompt, resume });
 
-    const args = [
-      ...this.config.claudeArgs,
-      '--settings',
-      this.settingsFile,
-      ...(resume === true ? ['--resume'] : []),
-      ...(typeof resume === 'string' ? ['--resume', resume] : []),
-      ...(prompt === '' ? [] : [prompt]),
-    ];
-
-    const pty = spawn(this.config.claudeBin, args, {
+    const pty = spawn(plan.bin, plan.args, {
       name: 'xterm-256color',
       cols,
       rows,
@@ -168,29 +157,24 @@ export class SessionManager {
       return;
     }
 
+    const ev = this.adapter.normalizeHook(e);
     const focused = this.focusedId === s.id;
-    const sessionId = e.payload['session_id'];
     let dirty = false;
 
-    if (typeof sessionId === 'string' && s.claudeId !== sessionId) {
-      s.claudeId = sessionId;
+    if (ev.agentSessionID !== undefined && s.claudeId !== ev.agentSessionID) {
+      s.claudeId = ev.agentSessionID;
 
       this.writeFleet();
 
       dirty = true;
     }
 
-    const transcript = e.payload['transcript_path'];
-
-    if (
-      typeof transcript === 'string' &&
-      ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(e.event)
-    ) {
-      void this.refreshName(s, transcript);
+    if (ev.nameSource !== undefined) {
+      void this.refreshName(s, ev.nameSource);
     }
 
-    switch (e.event) {
-      case 'SessionStart': {
+    switch (ev.kind) {
+      case 'started': {
         if (s.lastMsg === 'adopting…') {
           s.lastMsg = 'adopted';
           dirty = true;
@@ -198,33 +182,28 @@ export class SessionManager {
 
         break;
       }
-      case 'Notification': {
-        const message = e.payload['message'];
-
+      case 'needs-input': {
         s.state = 'needs_you';
         s.unread = !focused;
-        s.lastMsg = typeof message === 'string' && message !== '' ? message : 'needs input';
+        s.lastMsg = ev.message ?? 'needs input';
         dirty = true;
         break;
       }
-      case 'Stop': {
+      case 'turn-done': {
         s.state = 'done';
         s.unread = !focused;
         s.lastMsg = 'turn done';
         dirty = true;
         break;
       }
-      case 'UserPromptSubmit': {
-        const prompt = e.payload['prompt'];
-        const preview = typeof prompt === 'string' ? prompt.slice(0, 80) : '';
-
+      case 'prompt-submitted': {
         s.state = 'running';
         s.unread = false;
-        s.lastMsg = preview === '' ? 'working' : preview;
+        s.lastMsg = ev.message ?? 'working';
         dirty = true;
         break;
       }
-      case 'SessionEnd': {
+      case 'ended': {
         s.state = 'exited';
         s.unread = false;
         s.lastMsg = 'session ended';
@@ -232,7 +211,10 @@ export class SessionManager {
         break;
       }
 
-      // Statusline heartbeats only matter for the claudeId capture above.
+      // Heartbeats only matter for the agent-session-id capture above.
+      case 'heartbeat': {
+        break;
+      }
     }
 
     if (dirty) {
@@ -240,58 +222,21 @@ export class SessionManager {
     }
   }
 
-  // Claude is the naming authority: /rename writes custom-title lines to the
-  // transcript, auto-summaries write summary lines. Pull the freshest.
-  private async refreshName(s: Session, transcript: string) {
-    try {
-      const proc = Bun.spawn(['grep', '-E', '"type":"(custom-title|summary)"', transcript], {
-        stdout: 'pipe',
-        stderr: 'ignore',
-      });
+  private async refreshName(s: Session, source: string) {
+    const update = await this.adapter.loadName(source, s.namedBy);
 
-      const text = await new Response(proc.stdout).text();
+    if (update === null || update.name === '' || update.name === s.name) {
+      return;
+    }
 
-      let title: string | undefined;
-      let summary: string | undefined;
+    s.name = update.name;
 
-      for (const line of text.split('\n')) {
-        if (line.trim() === '') {
-          continue;
-        }
+    if (update.namedBy !== undefined) {
+      s.namedBy = update.namedBy;
+    }
 
-        try {
-          const parsed: unknown = JSON.parse(line);
-
-          if (!isRecord(parsed)) {
-            continue;
-          }
-
-          const customTitle = parsed['customTitle'];
-          const summaryText = parsed['summary'];
-
-          if (parsed['type'] === 'custom-title' && typeof customTitle === 'string') {
-            title = customTitle;
-          }
-
-          if (parsed['type'] === 'summary' && typeof summaryText === 'string') {
-            summary = summaryText;
-          }
-        } catch {}
-      }
-
-      const next = title ?? (s.namedBy === 'user' ? undefined : summary);
-
-      if (next !== undefined && next !== '' && next !== s.name) {
-        s.name = next;
-
-        if (title !== undefined) {
-          s.namedBy = 'claude';
-        }
-
-        this.writeFleet();
-        this.emitChange();
-      }
-    } catch {}
+    this.writeFleet();
+    this.emitChange();
   }
 
   // Shell command that re-opens this session outside atc (or anywhere).
@@ -302,10 +247,7 @@ export class SessionManager {
       return null;
     }
 
-    const resume = s.claudeId === undefined ? 'claude --resume' : `claude --resume ${s.claudeId}`;
-    const quoted = s.cwd.replaceAll("'", String.raw`'\''`);
-
-    return `cd '${quoted}' && ${resume}`;
+    return this.adapter.buildResumeCommand(s.cwd, s.claudeId);
   }
 
   ack(id: string) {
@@ -355,7 +297,7 @@ export class SessionManager {
   }
 
   // Consumed by the injected statusline command so wrangled sessions render
-  // fleet state inside Claude Code's own status line.
+  // fleet state inside their own status line.
   writeStatus() {
     const c = this.countStates();
     const urgent = this.sortSessions().find((s) => s.state === 'needs_you');
