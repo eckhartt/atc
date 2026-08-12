@@ -1,4 +1,4 @@
-import { unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { AgentAdapter } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
@@ -468,6 +468,10 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         return 'unsupported';
       }
 
+      if (!hasResumableTranscript(mgr, id)) {
+        return 'no_transcript';
+      }
+
       const yanked = mgr.yankHeadless(id);
 
       if (yanked === null) {
@@ -492,20 +496,24 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       return 'ok';
     },
     adoptSession: (id, cols, rows) => {
+      if (!hasResumableTranscript(mgr, id)) {
+        return 'no_transcript';
+      }
+
       headlessRuns.get(id)?.stop();
       headlessRuns.delete(id);
 
       const adopted = mgr.adoptTerminal(id, cols, rows);
 
       if (adopted === null) {
-        return false;
+        return 'missing';
       }
 
       ptyDims.set(id, { cols, rows });
 
       scheduleResize(id);
 
-      return true;
+      return 'ok';
     },
     ackSession: (id) => {
       if (!mgr.sessions.some((s) => s.id === id)) {
@@ -659,6 +667,20 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       }
     },
   };
+}
+
+// A session reporting a transcript path that does not exist on disk yet has
+// nothing to resume — claude exits immediately on such a resume, which
+// reads as the revive silently failing. A session that never reported a
+// path (foreign adapters) passes; the spawn itself will tell the truth.
+function hasResumableTranscript(mgr: SessionManager, id: string): boolean {
+  const s = mgr.sessions.find((x) => x.id === id);
+
+  if (s === undefined || s.transcriptSource === undefined) {
+    return true;
+  }
+
+  return existsSync(s.transcriptSource);
 }
 
 function getDescriptor(mgr: SessionManager, id: string): SessionDescriptor {

@@ -40,8 +40,15 @@ export interface DaemonContext {
     sessionID: string,
     data: string,
   ) => 'busy' | 'ok' | 'missing' | 'dead';
-  readonly ejectSession: (id: string, prompt: string) => 'ok' | 'missing' | 'unsupported';
-  readonly adoptSession: (id: string, cols: number, rows: number) => boolean;
+  readonly ejectSession: (
+    id: string,
+    prompt: string,
+  ) => 'ok' | 'missing' | 'unsupported' | 'no_transcript';
+  readonly adoptSession: (
+    id: string,
+    cols: number,
+    rows: number,
+  ) => 'ok' | 'missing' | 'no_transcript';
   readonly resizeSession: (client: OutputClient, sessionID: string, dims: Dims) => boolean;
   readonly resyncClient: (sessionID: string, client: OutputClient) => Promise<void>;
   readonly queueBytes?: number;
@@ -248,6 +255,12 @@ export class DaemonConnection {
           this.sendOk(req.id, {});
         } else if (result === 'unsupported') {
           this.sendErr(req.id, 'unsupported', 'this daemon has no headless runner');
+        } else if (result === 'no_transcript') {
+          this.sendErr(
+            req.id,
+            'session_dead',
+            'nothing to resume yet — the session has no saved transcript',
+          );
         } else {
           this.sendErr(
             req.id,
@@ -262,14 +275,21 @@ export class DaemonConnection {
         const sessionID = typeof req.p?.['session'] === 'string' ? req.p['session'] : '';
         const cols = typeof req.p?.['cols'] === 'number' ? req.p['cols'] : 80;
         const rows = typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24;
+        const adoptResult = this.ctx.adoptSession(sessionID, cols, rows);
 
-        if (this.ctx.adoptSession(sessionID, cols, rows)) {
+        if (adoptResult === 'ok') {
           this.sendOk(req.id, {});
+        } else if (adoptResult === 'no_transcript') {
+          this.sendErr(
+            req.id,
+            'session_dead',
+            'nothing to resume yet — the session has no saved transcript',
+          );
         } else {
           this.sendErr(
             req.id,
             'no_such_session',
-            `session '${sessionID}' is not a headless session with a captured agent session id`,
+            `session '${sessionID}' is not a dead or headless session with a captured agent session id`,
           );
         }
 

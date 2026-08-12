@@ -114,9 +114,7 @@ done
       // The client auto-spawned a daemon inside this test's HOME; its pid
       // file is how the harness finds and stops it.
       try {
-        const pid = Number(
-          readFileSync(join(home, '.local', 'state', 'atc', 'daemon.pid'), 'utf8'),
-        );
+        const pid = Number(readFileSync(join(home, 'atc-daemon.pid'), 'utf8'));
 
         if (Number.isInteger(pid) && pid > 1) {
           process.kill(pid, 'SIGTERM');
@@ -409,9 +407,7 @@ test('it restores the fleet from disk after a crash', async () => {
   pty.kill();
 
   try {
-    const pid = Number(
-      readFileSync(join(ctx.home, '.local', 'state', 'atc', 'daemon.pid'), 'utf8'),
-    );
+    const pid = Number(readFileSync(join(ctx.home, 'atc-daemon.pid'), 'utf8'));
 
     process.kill(pid, 'SIGKILL');
   } catch {}
@@ -435,6 +431,8 @@ test('it restores the fleet from disk after a crash', async () => {
 
 test('it revives a killed session in place with a fresh terminal', async () => {
   await using ctx = setupTest();
+
+  writeFileSync(join(ctx.home, 'fake-transcript.jsonl'), '{"type":"user"}\n');
 
   const pty = ctx.boot();
 
@@ -461,4 +459,32 @@ test('it revives a killed session in place with a fresh terminal', async () => {
   await ctx.waitFor('FAKE_CLAUDE_UP');
 
   expect(ctx.read()).toInclude('--resume fake-1');
+}, 15_000);
+
+test('it explains a revive that has no saved transcript instead of failing silently', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnSession(ctx, pty, 'transcriptless');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
+
+  pty.write('K');
+
+  await ctx.waitFor('kill selected session?');
+
+  ctx.reset();
+  pty.write('y');
+
+  await ctx.waitFor('killed');
+
+  ctx.reset();
+  pty.write('P');
+
+  await ctx.waitFor('nothing to resume yet');
 }, 15_000);

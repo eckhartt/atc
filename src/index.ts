@@ -1,7 +1,6 @@
 import { basename } from 'node:path';
 import { bootDaemonClient } from './boot-daemon';
 import { collectDirs, formatDir, pickMatches } from './dirs';
-import { getBuild } from './get-build';
 import type { EventMsg } from './protocol';
 import { isRecord } from './report';
 import { countSessionStates, sortSessionViews } from './sessions';
@@ -152,7 +151,9 @@ async function yankToHeadless(instruction: string) {
       session: ejectTarget,
       ...(instruction === '' ? {} : { prompt: instruction }),
     });
-  } catch {}
+  } catch (error) {
+    recordActionFailure(ejectTarget, error);
+  }
 
   openOverlay();
 }
@@ -162,8 +163,19 @@ async function adoptSession(id: string) {
     await client.sendRequest('session.adopt', { session: id, cols: cols(), rows: ptyRows() });
 
     await attach(id);
-  } catch {
+  } catch (error) {
+    recordActionFailure(id, error);
     openOverlay();
+  }
+}
+
+// A failed overlay action lands in the session's message column, so the
+// reason is visible instead of the action silently doing nothing.
+function recordActionFailure(id: string, error: unknown) {
+  const s = fleet.find((x) => x.id === id);
+
+  if (s !== undefined) {
+    s.lastMsg = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -850,7 +862,7 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
   }
 }
 
-const client = await bootDaemonClient(getBuild());
+const client = await bootDaemonClient();
 
 client.onEvent = applyDaemonEvent;
 

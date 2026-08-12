@@ -40,6 +40,7 @@ export interface Session {
   lastMsg: string;
   lastDetail?: string;
   claudeId?: string;
+  transcriptSource?: string;
 
   // who last named this session: the agent's own rename beats everything, a
   // user-typed spawn name beats auto-summaries.
@@ -341,6 +342,7 @@ export class SessionManager {
     }
 
     if (ev.nameSource !== undefined) {
+      s.transcriptSource = ev.nameSource;
       void this.refreshName(s, ev.nameSource);
     }
 
