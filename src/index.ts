@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { bootDaemonClient } from './boot-daemon';
+import { buildLeaderChords } from './build-leader-chords';
 import { loadConfig } from './config';
 import { collectDirs, findFuzzyScore, formatDir, pickMatches } from './dirs';
 import { pickTabTarget } from './pick-tab-target';
@@ -193,7 +194,7 @@ function openHelp() {
 function applyHelpKey(buf: Buffer) {
   const ch = buf.toString();
 
-  if (buf[0] === KEY.esc || ch === '?' || ch === 'q' || buf[0] === leader.code) {
+  if (buf[0] === KEY.esc || ch === '?' || ch === 'q' || isLeaderKey(buf)) {
     openOverlay();
   }
 }
@@ -240,7 +241,7 @@ function openOverlay() {
 
   overlaySelected = Math.max(0, focusedIndex);
 
-  stdout.write(ansi.clear);
+  stdout.write(ansi.resetInputModes + ansi.clear);
 
   renderOverlay();
 }
@@ -375,7 +376,7 @@ function quit(code = 0): never {
   detachFocused();
 
   client.stop();
-  stdout.write(ansi.showCursor + ansi.altScreenOff + ansi.reset);
+  stdout.write(ansi.resetInputModes + ansi.showCursor + ansi.altScreenOff + ansi.reset);
 
   try {
     process.stdin.setRawMode(false);
@@ -572,6 +573,7 @@ function copyToClipboard(text: string) {
 // ---- input ----
 
 const leader = loadConfig().leader;
+const leaderChords = buildLeaderChords(leader.code);
 
 const KEY = {
   tab: 0x09,
@@ -588,6 +590,12 @@ function isUp(buf: Buffer): boolean {
 
 function isDown(buf: Buffer): boolean {
   return buf.toString() === '\u001B[B' || buf.toString() === '\u001BOB';
+}
+
+// A fullscreen session can leave the terminal in an enhanced keyboard
+// encoding, so the leader arrives as a CSI chord instead of its bare byte.
+function isLeaderKey(buf: Buffer): boolean {
+  return leaderChords.includes(buf.toString());
 }
 
 function applyOverlayFilterKey(buf: Buffer): boolean {
@@ -627,7 +635,7 @@ function applyOverlayFilterKey(buf: Buffer): boolean {
     return true;
   }
 
-  if (buf[0] === KEY.enter || isUp(buf) || isDown(buf) || buf[0] === leader.code) {
+  if (buf[0] === KEY.enter || isUp(buf) || isDown(buf) || isLeaderKey(buf)) {
     return false;
   }
 
@@ -685,7 +693,7 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
-  if (buf[0] === leader.code || (buf[0] === KEY.esc && buf.length === 1)) {
+  if (isLeaderKey(buf) || (buf[0] === KEY.esc && buf.length === 1)) {
     toBase();
 
     return;
@@ -843,7 +851,7 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
     return;
   }
 
-  if (buf[0] === leader.code) {
+  if (isLeaderKey(buf)) {
     toBase();
 
     return;
@@ -985,7 +993,7 @@ const stdinDecoder = new TextDecoder('utf-8');
 process.stdin.on('data', (buf: Buffer) => {
   switch (mode) {
     case 'attached': {
-      if (buf[0] === leader.code && buf.length === 1) {
+      if (isLeaderKey(buf)) {
         openOverlay();
 
         return;
@@ -1001,7 +1009,7 @@ process.stdin.on('data', (buf: Buffer) => {
       return;
     }
     case 'home': {
-      if (buf[0] === leader.code) {
+      if (isLeaderKey(buf)) {
         openOverlay();
 
         return;
@@ -1188,7 +1196,7 @@ stdout.on('resize', () => {
 });
 
 process.on('uncaughtException', (err) => {
-  stdout.write(ansi.showCursor + ansi.altScreenOff + ansi.reset);
+  stdout.write(ansi.resetInputModes + ansi.showCursor + ansi.altScreenOff + ansi.reset);
 
   try {
     process.stdin.setRawMode(false);

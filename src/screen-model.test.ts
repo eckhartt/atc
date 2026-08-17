@@ -1,4 +1,5 @@
 import { expect, onTestFinished, test } from 'bun:test';
+import { RESET_INPUT_MODES } from './reset-input-modes';
 import { ScreenModel } from './screen-model';
 
 interface ModelContext {
@@ -79,4 +80,60 @@ test('it keeps replaying after a resize', async () => {
   const replay = await ctx.waitForReplay('after resize');
 
   expect(replay).toInclude('after resize');
+});
+
+test('it re-emits SGR mouse encoding and alternate scroll in the replay', async () => {
+  const ctx = setupModel();
+
+  ctx.model.record('\u001B[?1000h\u001B[?1006h\u001B[?1007h');
+
+  const replay = await ctx.model.renderReplay();
+
+  expect(replay).toInclude('\u001B[?1006h');
+  expect(replay).toInclude('\u001B[?1007h');
+});
+
+test('it restores the kitty keyboard push and modifyOtherKeys in the replay', async () => {
+  const ctx = setupModel();
+
+  ctx.model.record('\u001B[>1u\u001B[>4;2m');
+
+  const replay = await ctx.model.renderReplay();
+
+  expect(replay).toInclude('\u001B[>1u');
+  expect(replay).toInclude('\u001B[>4;2m');
+});
+
+test('it drops popped and reset input modes from the replay', async () => {
+  const ctx = setupModel();
+
+  ctx.model.record('\u001B[?1006h\u001B[>1u\u001B[>4;2m');
+  ctx.model.record('\u001B[?1006l\u001B[<u\u001B[>4;0m');
+
+  const replay = await ctx.model.renderReplay();
+
+  expect(replay).not.toInclude('\u001B[?1006h');
+  expect(replay).not.toInclude('\u001B[>1u');
+  expect(replay).not.toInclude('\u001B[>4;2m');
+});
+
+test('it re-emits a mode whose set sequence arrived split across chunks', async () => {
+  const ctx = setupModel();
+
+  ctx.model.record('\u001B[?10');
+  ctx.model.record('06h');
+
+  const replay = await ctx.model.renderReplay();
+
+  expect(replay).toInclude('\u001B[?1006h');
+});
+
+test('it leads the replay with an input-mode reset', async () => {
+  const ctx = setupModel();
+
+  ctx.model.record('hello');
+
+  const replay = await ctx.model.renderReplay();
+
+  expect(replay).toStartWith(RESET_INPUT_MODES);
 });

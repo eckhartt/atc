@@ -1,4 +1,5 @@
 import { formatDir } from './dirs';
+import { RESET_INPUT_MODES } from './reset-input-modes';
 import type { SessionState } from './sessions';
 
 // The slice of a session the drawing layer needs; satisfied by both the
@@ -15,6 +16,7 @@ const ESC = '\u001B';
 
 export const ansi = {
   altScreenOn: `${ESC}[?1049h`,
+  resetInputModes: RESET_INPUT_MODES,
   altScreenOff: `${ESC}[?1049l`,
   clear: `${ESC}[2J${ESC}[H`,
   hideCursor: `${ESC}[?25l`,
