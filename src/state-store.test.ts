@@ -121,6 +121,55 @@ test('it records hook events into the trail', () => {
   ]);
 });
 
+test('it records a Grok session id from the camelCase payload key', () => {
+  const dir = setupDir();
+  const dbPath = join(dir, 'state.db');
+
+  const store = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.recordEvent({
+    atcId: 's1',
+    event: 'SessionStart',
+    payload: { hookEventName: 'session_start', sessionId: 'g1' },
+  });
+
+  const db = new Database(dbPath, { readonly: true });
+
+  onTestFinished(() => {
+    db.close();
+  });
+
+  const rows = db
+    .query<{ atc_id: string; event: string; message: string | null; session_id: string }, []>(
+      'SELECT atc_id, event, message, session_id FROM events',
+    )
+    .all();
+
+  expect(rows).toStrictEqual([
+    { atc_id: 's1', event: 'SessionStart', message: null, session_id: 'g1' },
+  ]);
+});
+
+test('it reports recency for a Grok session id', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.recordEvent({
+    atcId: 's1',
+    event: 'SessionStart',
+    payload: { hookEventName: 'session_start', sessionId: 'g1' },
+  });
+
+  expect([...store.collectFleetRecency().keys()]).toStrictEqual(['g1']);
+});
+
 test('it reports the latest event timestamp per agent session', () => {
   const dir = setupDir();
   const dbPath = join(dir, 'state.db');

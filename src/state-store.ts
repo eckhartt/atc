@@ -139,7 +139,7 @@ export class StateStore {
 
   recordEvent(e: HookEvent): void {
     const rawMessage = e.payload['message'];
-    const rawSessionID = e.payload['session_id'];
+    const rawSessionID = e.payload['session_id'] ?? e.payload['sessionId'];
     const message = typeof rawMessage === 'string' ? rawMessage : null;
     const sessionID = typeof rawSessionID === 'string' ? rawSessionID : null;
 
