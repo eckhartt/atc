@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'node:fs';
 import { toAgentKind } from './agent-adapter';
+import type { AgentKind } from './agent-adapter';
 import type { HookEvent } from './hooks';
 import { parseFleetEntry } from './sessions';
 import type { FleetEntry } from './sessions';
@@ -40,6 +41,10 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS spawn_history (
         cwd TEXT PRIMARY KEY,
         last_spawn INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS prefs (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
     `);
 
@@ -164,6 +169,22 @@ export class StateStore {
       .all();
 
     return rows.map((row) => row.cwd);
+  }
+
+  loadLastUsedAgent(): AgentKind {
+    const row = this.db
+      .query<{ value: string }, []>("SELECT value FROM prefs WHERE key = 'last_used_agent'")
+      .get();
+
+    return toAgentKind(row?.value);
+  }
+
+  writeLastUsedAgent(agent: AgentKind): void {
+    this.db
+      .query(
+        'INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2',
+      )
+      .run('last_used_agent', agent);
   }
 
   stop(): void {

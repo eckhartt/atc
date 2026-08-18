@@ -456,6 +456,11 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     // waits on before booting the next one.
     if (e.event === 'SessionStart') {
       bootWaiters.get(e.atcId)?.();
+      const started = mgr.sessions.find((s) => s.id === e.atcId);
+
+      if (started !== undefined) {
+        store.writeLastUsedAgent(started.agent);
+      }
     }
 
     mgr.applyHook(e);
@@ -466,6 +471,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     collectSessions: () => mgr.collectDescriptors(),
     collectSpawnDirs: () => store.collectSpawnDirs(),
     collectFleet: () => store.loadFleet(),
+    loadLastUsedAgent: () => store.loadLastUsedAgent(),
     findAdapter: (kind) => mgr.findAdapter(kind),
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy, p.agent);

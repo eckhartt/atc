@@ -214,6 +214,7 @@ test('it spawns and lists a session through tool calls', async () => {
 
   expect(spawned['isError']).toBeUndefined();
   expect(getText(spawned)).toInclude('"name": "mcp-spawned"');
+  expect(getText(spawned)).toInclude('"agent": "claude"');
 
   ctx.sendRPC({
     jsonrpc: '2.0',
@@ -227,6 +228,55 @@ test('it spawns and lists a session through tool calls', async () => {
   const listed = getResult(listResponse);
 
   expect(getText(listed)).toInclude('mcp-spawned');
+});
+
+test('it advertises agent on atc_session_spawn and rejects an unknown value', async () => {
+  const ctx = setupMCP();
+
+  ctx.sendRPC({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+
+  await ctx.waitForResponse(1);
+
+  ctx.sendRPC({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+  const listResponse = await ctx.waitForResponse(2);
+
+  const listed = getResult(listResponse);
+  const tools = listed['tools'];
+
+  if (!Array.isArray(tools)) {
+    throw new TypeError('tools is not an array');
+  }
+
+  const spawnTool: unknown = tools.find(
+    (tool) => isRecord(tool) && tool['name'] === 'atc_session_spawn',
+  );
+
+  if (!isRecord(spawnTool) || !isRecord(spawnTool['inputSchema'])) {
+    throw new TypeError('atc_session_spawn has no input schema');
+  }
+
+  const properties = spawnTool['inputSchema']['properties'];
+
+  if (!isRecord(properties) || !isRecord(properties['agent'])) {
+    throw new TypeError('atc_session_spawn schema has no agent field');
+  }
+
+  expect(properties['agent']['enum']).toStrictEqual(['claude', 'grok']);
+
+  ctx.sendRPC({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'atc_session_spawn', arguments: { cwd: ctx.home, agent: 'codex' } },
+  });
+
+  const failResponse = await ctx.waitForResponse(3);
+
+  const failed = getResult(failResponse);
+
+  expect(failed['isError']).toBeTrue();
+  expect(getText(failed)).toInclude('agent must be');
 });
 
 test('it reports a failed tool call with isError instead of crashing', async () => {

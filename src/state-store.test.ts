@@ -237,6 +237,41 @@ test('it round-trips a grok fleet row', () => {
   ]);
 });
 
+test('it defaults last-used agent to claude and round-trips a write', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  expect(store.loadLastUsedAgent()).toBe('claude');
+
+  store.writeLastUsedAgent('grok');
+
+  expect(store.loadLastUsedAgent()).toBe('grok');
+
+  store.writeLastUsedAgent('claude');
+
+  expect(store.loadLastUsedAgent()).toBe('claude');
+});
+
+test('it loads last-used agent from a reopened store', () => {
+  const dbPath = join(setupDir(), 'state.db');
+
+  const first = new StateStore(dbPath);
+
+  first.writeLastUsedAgent('grok');
+  first.stop();
+
+  const second = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    second.stop();
+  });
+
+  expect(second.loadLastUsedAgent()).toBe('grok');
+});
+
 test('it loads a fleet written before the agent column as claude', () => {
   const dbPath = join(setupDir(), 'state.db');
 

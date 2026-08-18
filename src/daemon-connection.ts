@@ -24,6 +24,7 @@ export interface DaemonContext {
   readonly collectSessions: () => SessionDescriptor[];
   readonly collectSpawnDirs: () => string[];
   readonly collectFleet: () => FleetEntry[];
+  readonly loadLastUsedAgent: () => AgentKind;
   readonly findAdapter: (kind: AgentKind) => AgentAdapter | null;
   readonly spawnSession: (p: SpawnParams) => SessionDescriptor;
   readonly killSession: (id: string) => boolean;
@@ -539,6 +540,7 @@ export class DaemonConnection {
     this.sendOk(req.id, {
       daemon: this.ctx.build,
       limits: { maxLine: MAX_LINE, maxChunk: MAX_CHUNK },
+      lastUsedAgent: this.ctx.loadLastUsedAgent(),
     });
 
     return true;

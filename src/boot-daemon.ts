@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import type { AgentKind } from './agent-adapter';
 import { daemonPidFile, daemonSocketPath } from './config';
 import { DaemonClient } from './daemon-client';
 import { getBuild } from './get-build';
@@ -9,6 +10,7 @@ import { isRecord } from './report';
 export interface DaemonBoot {
   readonly client: DaemonClient;
   readonly stale: boolean;
+  readonly lastUsedAgent: AgentKind;
 }
 
 /**
@@ -30,7 +32,11 @@ export async function bootDaemonClient(): Promise<DaemonBoot> {
     try {
       const hello = await client.sendHello(build);
 
-      return { client, stale: hello['daemon'] !== build };
+      return {
+        client,
+        stale: hello['daemon'] !== build,
+        lastUsedAgent: hello['lastUsedAgent'] === 'grok' ? 'grok' : 'claude',
+      };
     } catch (error) {
       client.stop();
 

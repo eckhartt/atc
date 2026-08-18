@@ -50,8 +50,9 @@ paint
 printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
 sleep 0.3
 printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+# bash 3.2 read -t takes whole seconds; a fraction times out immediately
 for _ in $(seq 1 300); do
-  if read -t 0.1 -r line; then echo "GOT:$line"; fi
+  if read -t 1 -r line; then echo "GOT:$line"; fi
 done
 `,
     { mode: 0o755 },
@@ -131,6 +132,10 @@ done
 async function spawnSession(ctx: TestContext, pty: IPty, name: string) {
   pty.write('n');
 
+  await ctx.waitFor('spawn: agent');
+
+  pty.write('\r');
+
   await ctx.waitFor('spawn: directory');
 
   pty.write('\r');
@@ -201,7 +206,7 @@ test('it surfaces a needs-you session in the overlay and kills it on confirm', a
   await Bun.sleep(500); // quit tears the process down; only the exit event observes it
 
   expect(exited).toBe(true);
-});
+}, 15_000);
 
 test('it clears the need state when attaching a needy session', async () => {
   await using ctx = setupTest();
@@ -261,6 +266,10 @@ test('it narrows the overlay to sessions matching the slash filter', async () =>
   await ctx.waitFor('sessions');
 
   pty.write('n');
+
+  await ctx.waitFor('spawn: agent');
+
+  pty.write('\r');
 
   await ctx.waitFor('spawn: directory');
 
@@ -340,6 +349,10 @@ test('it jumps to the most urgent needs-you session on tab', async () => {
   await ctx.waitFor('sessions');
 
   pty.write('n');
+
+  await ctx.waitFor('spawn: agent');
+
+  pty.write('\r');
 
   await ctx.waitFor('spawn: directory');
 
@@ -450,6 +463,10 @@ test('it clusters overlay rows under repository headers when grouping is toggled
 
   pty.write('n');
 
+  await ctx.waitFor('spawn: agent');
+
+  pty.write('\r');
+
   await ctx.waitFor('spawn: directory');
 
   pty.write(join(ctx.home, 'otherproj'));
@@ -494,6 +511,10 @@ test('it preselects the focused session when the overlay opens', async () => {
   await ctx.waitFor('NEEDS YOU');
 
   pty.write('n');
+
+  await ctx.waitFor('spawn: agent');
+
+  pty.write('\r');
 
   await ctx.waitFor('spawn: directory');
 
@@ -550,6 +571,10 @@ test('it adopts a session with --resume and yanks its resume command', async () 
 
   pty.write('r');
 
+  await ctx.waitFor('adopt: agent');
+
+  pty.write('\r');
+
   await ctx.waitFor('adopt: directory');
 
   pty.write('\r');
@@ -582,7 +607,7 @@ test('it adopts a session with --resume and yanks its resume command', async () 
 
   expect(cmd).toInclude('claude --resume fake-1');
   expect(cmd).toStartWith("cd '");
-});
+}, 15_000);
 
 test('it chains the user statusline and appends the fleet segment', async () => {
   await using ctx = setupTest();

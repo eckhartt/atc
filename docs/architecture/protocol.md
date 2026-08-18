@@ -54,8 +54,13 @@ says to restart the daemon.
   "p": { "client": "atc/0.4.0", "auth": { "scheme": "none" } } }
 
 { "v": 1, "id": 1, "ok": { "daemon": "atc/0.4.0",
-                           "limits": { "maxLine": 1048576, "maxChunk": 65536 } } }
+                           "limits": { "maxLine": 1048576, "maxChunk": 65536 },
+                           "lastUsedAgent": "claude" } }
 ```
+
+`lastUsedAgent` is the agent of the last session that reported SessionStart (`claude` or `grok`). A
+spawn that never reports SessionStart does not change it. MCP spawn ignores the value and defaults
+to Claude.
 
 `auth` is present from day one (`{"scheme": "none"}` on the unix socket) so a TCP or SSH transport
 later adds a scheme, not a handshake redesign. The transport is assumed to be an ordered, reliable
@@ -64,21 +69,21 @@ semantics.
 
 ## Methods
 
-| Method                  | Purpose                                                                                                     |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `daemon.hello`          | handshake; must be first                                                                                    |
-| `daemon.ping`           | liveness / latency probe                                                                                    |
-| `session.list`          | fleet listing (descriptors mirror the `Session` shape, minus the PTY handle, plus `kind`)                   |
-| `session.spawn`         | spawn (cwd, name, prompt, resume, dims)                                                                     |
-| `session.kill`          | kill process; explicit, never implied by disconnect                                                         |
-| `session.ack`           | clear unread without attaching                                                                              |
-| `session.attach`        | subscribe to a session's output; returns replay + current dims                                              |
-| `session.detach`        | unsubscribe; session keeps running                                                                          |
-| `session.input`         | keyboard input to a session (`{ session, d }`)                                                              |
-| `session.resize`        | client reports its dims; effective size is the min across attached clients (broadcast as `session.resized`) |
-| `session.resumeCommand` | build the `cd … && claude --resume <id>` string                                                             |
-| `fleet.restore`         | cold-boot recovery: respawn the persisted fleet                                                             |
-| `permission.respond`    | answer a permission request (`{ request, decision }`)                                                       |
+| Method                  | Purpose                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `daemon.hello`          | handshake; must be first. The ok includes `lastUsedAgent` (`claude` or `grok`), written on SessionStart.     |
+| `daemon.ping`           | liveness / latency probe                                                                                     |
+| `session.list`          | fleet listing (descriptors mirror the `Session` shape, minus the PTY handle, plus `kind` and `agent`)        |
+| `session.spawn`         | spawn (cwd, name, prompt, resume, dims, optional `agent`). Omitted `agent` is Claude. Unknown is `bad_args`. |
+| `session.kill`          | kill process; explicit, never implied by disconnect                                                          |
+| `session.ack`           | clear unread without attaching                                                                               |
+| `session.attach`        | subscribe to a session's output; returns replay + current dims                                               |
+| `session.detach`        | unsubscribe; session keeps running                                                                           |
+| `session.input`         | keyboard input to a session (`{ session, d }`)                                                               |
+| `session.resize`        | client reports its dims; effective size is the min across attached clients (broadcast as `session.resized`)  |
+| `session.resumeCommand` | build the resume command for that session's agent (`claude --resume` or `grok --resume`)                     |
+| `fleet.restore`         | cold-boot recovery: respawn the persisted fleet                                                              |
+| `permission.respond`    | answer a permission request (`{ request, decision }`)                                                        |
 
 `session.input` is a request (it gets an ok, preserving the rule that state-changing messages are
 acknowledged) but clients need not await it — measured cost of the JSON round trip is ~0.2µs against
