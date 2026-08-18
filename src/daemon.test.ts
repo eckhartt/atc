@@ -5,11 +5,15 @@ import { join } from 'node:path';
 import type { AgentAdapter } from './agent-adapter';
 import { startDaemon } from './daemon';
 import { DaemonClient } from './daemon-client';
+import { GrokAdapter } from './grok-adapter';
 import { OutboundQueue } from './outbound-queue';
+import { isRecord } from './report';
 
 // Protocol-level tests: handshake, errors, and spawn-parameter validation.
 // Session behavior against a real fake-claude lives in test/daemon-e2e.test.ts.
 const idleAdapter: AgentAdapter = {
+  kind: 'claude',
+  supportsHeadless: true,
   screenDetector: null,
   planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
   normalizeHook: () => ({ kind: 'heartbeat' }),
@@ -292,6 +296,201 @@ test('it refuses session.spawn with agent grok as unsupported', async () => {
   const fleet = await client.sendRequest('fleet.list');
 
   expect(fleet).toStrictEqual({ fleet: [] });
+});
+
+test('it spawns a grok session when a grok adapter is registered', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
+  const prevHome = process.env['GROK_HOME'];
+
+  process.env['GROK_HOME'] = join(dir, 'grok-home');
+
+  const grok = new GrokAdapter({
+    claudeBin: 'claude',
+    claudeArgs: [],
+    grokBin: 'bash',
+    grokArgs: ['-c', 'sleep 30'],
+    leader: { code: 0, label: '^Space' },
+  });
+
+  const daemon = startDaemon({
+    socketPath: join(dir, 'daemon.sock'),
+    reporterSocketPath: join(dir, 'reporter.sock'),
+    build: 'atc/test-build',
+    adapter: idleAdapter,
+    adapters: { grok },
+    dbPath: join(dir, 'state.db'),
+    statusPath: join(dir, 'status.json'),
+  });
+
+  const client = await DaemonClient.open(join(dir, 'daemon.sock'));
+
+  onTestFinished(() => {
+    client.stop();
+    daemon.stop();
+
+    if (prevHome === undefined) {
+      delete process.env['GROK_HOME'];
+    } else {
+      process.env['GROK_HOME'] = prevHome;
+    }
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await client.sendHello('atc/test-build');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: '/tmp',
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  expect(ok['session']).toMatchObject({ agent: 'grok' });
+});
+
+test('it yanks a grok session by id and without an id', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
+  const prevHome = process.env['GROK_HOME'];
+
+  process.env['GROK_HOME'] = join(dir, 'grok-home');
+
+  const grok = new GrokAdapter({
+    claudeBin: 'claude',
+    claudeArgs: [],
+    grokBin: 'bash',
+    grokArgs: ['-c', 'sleep 30'],
+    leader: { code: 0, label: '^Space' },
+  });
+
+  const daemon = startDaemon({
+    socketPath: join(dir, 'daemon.sock'),
+    reporterSocketPath: join(dir, 'reporter.sock'),
+    build: 'atc/test-build',
+    adapter: idleAdapter,
+    adapters: { grok },
+    dbPath: join(dir, 'state.db'),
+    statusPath: join(dir, 'status.json'),
+  });
+
+  const client = await DaemonClient.open(join(dir, 'daemon.sock'));
+
+  onTestFinished(() => {
+    client.stop();
+    daemon.stop();
+
+    if (prevHome === undefined) {
+      delete process.env['GROK_HOME'];
+    } else {
+      process.env['GROK_HOME'] = prevHome;
+    }
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await client.sendHello('atc/test-build');
+
+  const withID = await client.sendRequest('session.spawn', {
+    cwd: '/tmp/proj',
+    agent: 'grok',
+    resume: 'g-1',
+    cols: 80,
+    rows: 24,
+  });
+
+  const withoutID = await client.sendRequest('session.spawn', {
+    cwd: '/tmp/proj',
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  const withSession = withID['session'];
+  const withoutSession = withoutID['session'];
+
+  if (
+    !isRecord(withSession) ||
+    typeof withSession['id'] !== 'string' ||
+    !isRecord(withoutSession) ||
+    typeof withoutSession['id'] !== 'string'
+  ) {
+    throw new Error('no session in spawn answer');
+  }
+
+  const resumed = await client.sendRequest('session.resumeCommand', { session: withSession['id'] });
+
+  const welcome = await client.sendRequest('session.resumeCommand', {
+    session: withoutSession['id'],
+  });
+
+  expect(resumed).toStrictEqual({ command: "cd '/tmp/proj' && grok --resume g-1" });
+  expect(welcome).toStrictEqual({ command: "cd '/tmp/proj' && grok" });
+});
+
+test('it revives a grok session from a captured id when summary.json is missing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atc-daemon-'));
+  const prevHome = process.env['GROK_HOME'];
+
+  process.env['GROK_HOME'] = join(dir, 'grok-home');
+
+  const grok = new GrokAdapter({
+    claudeBin: 'claude',
+    claudeArgs: [],
+    grokBin: 'bash',
+    grokArgs: ['-c', 'sleep 30'],
+    leader: { code: 0, label: '^Space' },
+  });
+
+  const daemon = startDaemon({
+    socketPath: join(dir, 'daemon.sock'),
+    reporterSocketPath: join(dir, 'reporter.sock'),
+    build: 'atc/test-build',
+    adapter: idleAdapter,
+    adapters: { grok },
+    dbPath: join(dir, 'state.db'),
+    statusPath: join(dir, 'status.json'),
+  });
+
+  const client = await DaemonClient.open(join(dir, 'daemon.sock'));
+
+  onTestFinished(() => {
+    client.stop();
+    daemon.stop();
+
+    if (prevHome === undefined) {
+      delete process.env['GROK_HOME'];
+    } else {
+      process.env['GROK_HOME'] = prevHome;
+    }
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await client.sendHello('atc/test-build');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: '/tmp',
+    agent: 'grok',
+    resume: 'g-revive',
+    cols: 80,
+    rows: 24,
+  });
+
+  const spawned = ok['session'];
+
+  if (!isRecord(spawned) || typeof spawned['id'] !== 'string') {
+    throw new Error('no session in spawn answer');
+  }
+
+  await client.sendRequest('session.kill', { session: spawned['id'] });
+
+  const adopted = await client.sendRequest('session.adopt', {
+    session: spawned['id'],
+    cols: 80,
+    rows: 24,
+  });
+
+  expect(adopted).toStrictEqual({});
 });
 
 test('it rejects session.spawn with an unknown agent as bad_args', async () => {

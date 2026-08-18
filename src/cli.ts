@@ -45,6 +45,7 @@ const main = defineCommand({
           const daemon = await import('./daemon');
           const config = await import('./config');
           const claude = await import('./claude-adapter');
+          const grok = await import('./grok-adapter');
           const headless = await import('./start-headless-run');
 
           // Test harnesses shrink the outbound queue to force overflow
@@ -60,12 +61,18 @@ const main = defineCommand({
           const restoreBootTimeoutMs =
             Number.isFinite(capOverride) && capOverride >= 0 ? capOverride : 15_000;
 
+          const claudeAdapter = new claude.ClaudeAdapter(cfg);
+          const grokAdapter = new grok.GrokAdapter(cfg);
+
+          grok.tryWriteGrokHookFile();
+
           const handle = daemon.startDaemon({
             headlessRunner: (runOpts, hooks) => headless.startHeadlessRun(runOpts, hooks),
             socketPath: config.daemonSocketPath,
             reporterSocketPath: config.socketPath,
             build: getBuild(),
-            adapter: new claude.ClaudeAdapter(cfg),
+            adapter: claudeAdapter,
+            adapters: { claude: claudeAdapter, grok: grokAdapter },
             dbPath: config.dbFile,
             legacyFleetPath: config.legacyFleetFile,
             pidPath: config.daemonPidFile,

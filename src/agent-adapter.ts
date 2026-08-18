@@ -34,6 +34,10 @@ export interface AdapterEvent {
 
   // Opaque handle the adapter can later pull a session name from.
   nameSource?: string;
+
+  // Claude resume-existence path. Distinct from nameSource: a naming
+  // handle is not a resume gate.
+  transcriptSource?: string;
 }
 
 export interface NameUpdate {
@@ -58,6 +62,9 @@ interface ScreenDetector {
  * session outside atc. The session core never sees past this interface.
  */
 export interface AgentAdapter {
+  readonly kind: AgentKind;
+  readonly supportsHeadless: boolean;
+
   // The detector stack's screen tier; null when hooks are authoritative.
   readonly screenDetector: ScreenDetector | null;
   readonly planSpawn: (opts: SpawnOptions) => SpawnPlan;

@@ -1,5 +1,5 @@
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
-import type { AgentAdapter } from './agent-adapter';
+import type { AgentAdapter, AgentKind } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
 import { DaemonConnection } from './daemon-connection';
@@ -20,6 +20,10 @@ export interface DaemonOptions {
   // Build string sent in the handshake and in mismatch errors, e.g. "atc/0.1.0".
   readonly build: string;
   readonly adapter: AgentAdapter;
+
+  // Optional per-kind adapters. Lookup never falls back across kinds: a
+  // grok session with no grok adapter is unsupported, not a Claude spawn.
+  readonly adapters?: Partial<Readonly<Record<AgentKind, AgentAdapter>>>;
 
   // SQLite path for daemon state; a fleet.json at legacyFleetPath seeds the
   // fleet table once so upgrading keeps the restorable fleet.
@@ -95,12 +99,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   }
 
   const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
-
-  const mgr =
-    opts.statusPath === undefined
-      ? new SessionManager(opts.adapter, store)
-      : new SessionManager(opts.adapter, store, opts.statusPath);
-
+  const mgr = new SessionManager(opts.adapter, store, opts.statusPath, opts.adapters ?? {});
   const clients = new Set<DaemonConnection>();
 
   const emitEvent = (event: EventMsg) => {
@@ -167,8 +166,15 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const startHeadlessTurn = (sessionID: string, prompt: string): boolean => {
     const runner = opts.headlessRunner;
     const s = mgr.sessions.find((x) => x.id === sessionID);
+    const adapter = s === undefined ? null : mgr.findAdapter(s.agent);
 
-    if (runner === undefined || s === undefined || headlessRuns.has(sessionID)) {
+    if (
+      runner === undefined ||
+      s === undefined ||
+      adapter === null ||
+      !adapter.supportsHeadless ||
+      headlessRuns.has(sessionID)
+    ) {
       return false;
     }
 
@@ -215,7 +221,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   // The screen tier of the detector stack: once a session's output has
   // quiesced, judge the serialized screen and flip running/needs_you.
   const scheduleDetect = (sessionID: string) => {
-    const detector = opts.adapter.screenDetector;
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+    const detector = s === undefined ? null : (mgr.findAdapter(s.agent)?.screenDetector ?? null);
 
     if (detector === null) {
       return;
@@ -306,7 +313,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   };
 
   const applyScreenJudgment = async (sessionID: string) => {
-    const detector = opts.adapter.screenDetector;
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+    const detector = s === undefined ? null : (mgr.findAdapter(s.agent)?.screenDetector ?? null);
     const model = screens.get(sessionID);
 
     if (detector === null || model === undefined) {
@@ -458,6 +466,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     collectSessions: () => mgr.collectDescriptors(),
     collectSpawnDirs: () => store.collectSpawnDirs(),
     collectFleet: () => store.loadFleet(),
+    findAdapter: (kind) => mgr.findAdapter(kind),
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy, p.agent);
 
@@ -488,6 +497,18 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       return true;
     },
     ejectSession: (id, prompt) => {
+      const s = mgr.sessions.find((x) => x.id === id);
+
+      if (s === undefined) {
+        return 'missing';
+      }
+
+      const adapter = mgr.findAdapter(s.agent);
+
+      if (adapter === null || !adapter.supportsHeadless) {
+        return 'unsupported_agent';
+      }
+
       if (opts.headlessRunner === undefined) {
         return 'unsupported';
       }
@@ -750,14 +771,21 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   return { stop: stopDaemon };
 }
 
-// A session reporting a transcript path that does not exist on disk yet has
-// nothing to resume — claude exits immediately on such a resume, which
-// reads as the revive silently failing. A session that never reported a
-// path (foreign adapters) passes; the spawn itself will tell the truth.
+// Claude resume requires the transcript file on disk when one has been
+// reported. Grok resume is "the session UUID has been captured", not
+// "summary.json exists".
 function hasResumableTranscript(mgr: SessionManager, id: string): boolean {
   const s = mgr.sessions.find((x) => x.id === id);
 
-  if (s === undefined || s.transcriptSource === undefined) {
+  if (s === undefined) {
+    return false;
+  }
+
+  if (s.agent === 'grok') {
+    return s.claudeId !== undefined;
+  }
+
+  if (s.transcriptSource === undefined) {
     return true;
   }
 

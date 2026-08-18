@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { AgentKind } from './agent-adapter';
+import type { AgentAdapter, AgentKind } from './agent-adapter';
 import type { Dims } from './attach-registry';
 import { OutboundQueue } from './outbound-queue';
 import type { SocketWriter } from './outbound-queue';
@@ -24,6 +24,7 @@ export interface DaemonContext {
   readonly collectSessions: () => SessionDescriptor[];
   readonly collectSpawnDirs: () => string[];
   readonly collectFleet: () => FleetEntry[];
+  readonly findAdapter: (kind: AgentKind) => AgentAdapter | null;
   readonly spawnSession: (p: SpawnParams) => SessionDescriptor;
   readonly killSession: (id: string) => boolean;
   readonly updateSession: (id: string, name?: string, pinned?: boolean) => boolean;
@@ -46,7 +47,7 @@ export interface DaemonContext {
   readonly ejectSession: (
     id: string,
     prompt: string,
-  ) => 'ok' | 'missing' | 'unsupported' | 'no_transcript';
+  ) => 'ok' | 'missing' | 'unsupported' | 'unsupported_agent' | 'no_transcript';
   readonly adoptSession: (
     id: string,
     cols: number,
@@ -272,6 +273,8 @@ export class DaemonConnection {
           this.sendOk(req.id, {});
         } else if (result === 'unsupported') {
           this.sendErr(req.id, 'unsupported', 'this daemon has no headless runner');
+        } else if (result === 'unsupported_agent') {
+          this.sendErr(req.id, 'unsupported', 'grok sessions have no headless handoff');
         } else if (result === 'no_transcript') {
           this.sendErr(
             req.id,
@@ -379,8 +382,10 @@ export class DaemonConnection {
       return;
     }
 
-    if (rawAgent === 'grok') {
-      this.sendErr(req.id, 'unsupported', "no adapter for agent 'grok'");
+    const agent: AgentKind = rawAgent === 'grok' ? 'grok' : 'claude';
+
+    if (this.ctx.findAdapter(agent) === null) {
+      this.sendErr(req.id, 'unsupported', `no adapter for agent '${agent}'`);
 
       return;
     }
@@ -393,7 +398,7 @@ export class DaemonConnection {
       rows: typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24,
       resume,
       namedBy: name === '' ? 'auto' : 'user',
-      agent: 'claude',
+      agent,
     });
 
     this.sendOk(req.id, { session });

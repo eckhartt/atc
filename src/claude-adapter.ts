@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type {
   AdapterEvent,
   AgentAdapter,
@@ -8,6 +8,7 @@ import type {
   SpawnOptions,
   SpawnPlan,
 } from './agent-adapter';
+import { buildCLICommand } from './build-cli-command';
 import type { Config } from './config';
 import { stateDir } from './config';
 import type { HookEvent } from './hooks';
@@ -18,6 +19,10 @@ import { isRecord } from './report';
  * resume semantics, transcript name-pulling, and statusline chaining.
  */
 export class ClaudeAdapter implements AgentAdapter {
+  readonly kind = 'claude';
+
+  readonly supportsHeadless = true;
+
   // Claude's hooks are authoritative; no screen heuristics needed.
   readonly screenDetector = null;
 
@@ -55,7 +60,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const named: AdapterEvent = {
       ...base,
-      ...(typeof transcript === 'string' ? { nameSource: transcript } : {}),
+      ...(typeof transcript === 'string'
+        ? { nameSource: transcript, transcriptSource: transcript }
+        : {}),
     };
 
     switch (e.event) {
@@ -220,16 +227,4 @@ function writeHookSettings(): string {
 
 function truncateDetail(text: string): string {
   return text.length <= 600 ? text : `${text.slice(0, 599)}…`;
-}
-
-// Wrangled sessions invoke atc subcommands: under bun the CLI entry path is
-// part of the command; a compiled binary is itself the entry.
-function buildCLICommand(subcommand: string): string {
-  const exec = process.execPath;
-
-  if (basename(exec) === 'bun' || basename(exec) === 'bun.exe') {
-    return `"${exec}" "${join(import.meta.dir, 'cli.ts')}" ${subcommand}`;
-  }
-
-  return `"${exec}" ${subcommand}`;
 }
