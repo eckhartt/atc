@@ -1150,11 +1150,6 @@ test('it adopts grok with --no-leader and without --resume', async () => {
 
   pty.write('adoptedg\r');
 
-  await ctx.waitFor('adopt: group');
-
-  ctx.reset();
-  pty.write('\r');
-
   await ctx.waitFor('FAKE_GROK_UP');
 
   expect(ctx.read()).toInclude('FAKE_GROK_UP args: --no-leader');
