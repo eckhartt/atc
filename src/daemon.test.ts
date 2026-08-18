@@ -7,9 +7,8 @@ import { startDaemon } from './daemon';
 import { DaemonClient } from './daemon-client';
 import { OutboundQueue } from './outbound-queue';
 
-// Protocol-level tests only: nothing here spawns a session, so the manager
-// never writes state files. Session behavior runs against a daemon
-// subprocess with an isolated HOME in test/daemon-e2e.test.ts.
+// Protocol-level tests: handshake, errors, and spawn-parameter validation.
+// Session behavior against a real fake-claude lives in test/daemon-e2e.test.ts.
 const idleAdapter: AgentAdapter = {
   screenDetector: null,
   planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
@@ -28,6 +27,7 @@ function setupDaemon(): string {
     build: 'atc/test-build',
     adapter: idleAdapter,
     dbPath: join(dir, 'state.db'),
+    statusPath: join(dir, 'status.json'),
   });
 
   onTestFinished(() => {
@@ -264,6 +264,44 @@ test('it rejects session.spawn without a cwd as bad_args', async () => {
   await client.sendHello('atc/test-build');
 
   expect(client.sendRequest('session.spawn', {})).rejects.toMatchObject({ code: 'bad_args' });
+});
+
+test('it reports agent claude when session.spawn omits agent', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  const ok = await client.sendRequest('session.spawn', { cwd: '/tmp', cols: 80, rows: 24 });
+
+  expect(ok['session']).toMatchObject({ agent: 'claude' });
+});
+
+test('it refuses session.spawn with agent grok as unsupported', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(client.sendRequest('session.spawn', { cwd: '/tmp', agent: 'grok' })).rejects.toMatchObject(
+    { code: 'unsupported' },
+  );
+
+  const list = await client.sendRequest('session.list');
+
+  expect(list).toStrictEqual({ sessions: [] });
+
+  const fleet = await client.sendRequest('fleet.list');
+
+  expect(fleet).toStrictEqual({ fleet: [] });
+});
+
+test('it rejects session.spawn with an unknown agent as bad_args', async () => {
+  const client = await setupClient();
+
+  await client.sendHello('atc/test-build');
+
+  expect(
+    client.sendRequest('session.spawn', { cwd: '/tmp', agent: 'codex' }),
+  ).rejects.toMatchObject({ code: 'bad_args' });
 });
 
 test('it connects nothing on a socket path with no daemon', () => {

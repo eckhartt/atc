@@ -575,9 +575,9 @@ sleep 30
   const seed = new StateStore(dbPath);
 
   seed.writeFleet([
-    { name: 'one', cwd: home, claudeId: 'fake-a' },
-    { name: 'two', cwd: home, claudeId: 'fake-b' },
-    { name: 'three', cwd: home, claudeId: 'fake-c' },
+    { name: 'one', cwd: home, claudeId: 'fake-a', agent: 'claude' },
+    { name: 'two', cwd: home, claudeId: 'fake-b', agent: 'claude' },
+    { name: 'three', cwd: home, claudeId: 'fake-c', agent: 'claude' },
   ]);
 
   seed.stop();

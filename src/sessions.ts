@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'bun-pty';
 import type { IPty } from 'bun-pty';
-import type { AgentAdapter } from './agent-adapter';
+import { toAgentKind } from './agent-adapter';
+import type { AgentAdapter, AgentKind } from './agent-adapter';
 import { collectCleanEnv } from './collect-clean-env';
 import { socketPath, stateDir, statusFile } from './config';
 import type { HookEvent } from './hooks';
@@ -24,6 +25,7 @@ export interface SessionDescriptor {
   readonly lastMsg: string;
   readonly lastDetail?: string;
   readonly claudeId?: string;
+  readonly agent: AgentKind;
   readonly pinned: boolean;
   readonly lastAttachedAt: number;
   readonly repoRoot: string;
@@ -44,6 +46,7 @@ export interface Session {
   lastMsg: string;
   lastDetail?: string;
   claudeId?: string;
+  agent: AgentKind;
   transcriptSource?: string;
   pinned: boolean;
 
@@ -67,6 +70,7 @@ export interface FleetEntry {
   readonly name: string;
   readonly cwd: string;
   readonly claudeId: string;
+  readonly agent: AgentKind;
   readonly pinned?: boolean;
   readonly lastAttachedAt?: number;
 }
@@ -87,6 +91,26 @@ const jsonFleetStore: FleetStore = {
   },
 };
 
+export function parseFleetEntry(raw: unknown): FleetEntry | undefined {
+  if (
+    !isRecord(raw) ||
+    typeof raw['name'] !== 'string' ||
+    typeof raw['cwd'] !== 'string' ||
+    typeof raw['claudeId'] !== 'string'
+  ) {
+    return undefined;
+  }
+
+  return {
+    name: raw['name'],
+    cwd: raw['cwd'],
+    claudeId: raw['claudeId'],
+    agent: toAgentKind(raw['agent']),
+    ...(raw['pinned'] === true ? { pinned: true } : {}),
+    ...(typeof raw['lastAttachedAt'] === 'number' ? { lastAttachedAt: raw['lastAttachedAt'] } : {}),
+  };
+}
+
 function loadFleet(): FleetEntry[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(fleetFile, 'utf8'));
@@ -95,13 +119,17 @@ function loadFleet(): FleetEntry[] {
       return [];
     }
 
-    return parsed.filter(
-      (entry): entry is FleetEntry =>
-        isRecord(entry) &&
-        typeof entry['name'] === 'string' &&
-        typeof entry['cwd'] === 'string' &&
-        typeof entry['claudeId'] === 'string',
-    );
+    const entries: FleetEntry[] = [];
+
+    for (const entry of parsed) {
+      const parsedEntry = parseFleetEntry(entry);
+
+      if (parsedEntry !== undefined) {
+        entries.push(parsedEntry);
+      }
+    }
+
+    return entries;
   } catch {
     return [];
   }
@@ -167,6 +195,7 @@ export class SessionManager {
       unread: false,
       lastMsg: 'waiting to restore',
       claudeId: entry.claudeId,
+      agent: entry.agent,
       pinned: entry.pinned ?? false,
       lastAttachedAt: entry.lastAttachedAt ?? Date.now(),
       repoRoot: resolveRepoRoot(entry.cwd),
@@ -314,6 +343,7 @@ export class SessionManager {
     rows: number,
     resume: boolean | string = false,
     namedBy: 'user' | 'auto' = 'auto',
+    agent: AgentKind = 'claude',
   ): Session {
     const id = `s${++counter}-${Date.now().toString(36)}`;
     const plan = this.adapter.planSpawn({ prompt, resume });
@@ -342,6 +372,7 @@ export class SessionManager {
       unread: false,
       lastMsg: initialMsg,
       ...(typeof resume === 'string' ? { claudeId: resume } : {}),
+      agent,
       pinned: false,
       lastAttachedAt: Date.now(),
       repoRoot: resolveRepoRoot(cwd),
@@ -386,6 +417,7 @@ export class SessionManager {
       lastMsg: s.lastMsg,
       ...(s.lastDetail === undefined ? {} : { lastDetail: s.lastDetail }),
       ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
+      agent: s.agent,
       pinned: s.pinned,
       lastAttachedAt: s.lastAttachedAt,
       repoRoot: s.repoRoot,
@@ -612,6 +644,7 @@ export class SessionManager {
           name: s.name,
           cwd: s.cwd,
           claudeId: s.claudeId,
+          agent: s.agent,
           ...(s.pinned ? { pinned: true } : {}),
           lastAttachedAt: s.lastAttachedAt,
         });

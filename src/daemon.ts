@@ -418,6 +418,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         kind: s.kind,
         alive: s.pty !== null || (s.kind === 'jsonl' && s.state !== 'exited'),
         ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
+        agent: s.agent,
         pinned: s.pinned,
         lastAttachedAt: s.lastAttachedAt,
       }),
@@ -458,7 +459,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     collectSpawnDirs: () => store.collectSpawnDirs(),
     collectFleet: () => store.loadFleet(),
     spawnSession: (p) => {
-      const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
+      const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy, p.agent);
 
       ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
       screens.set(s.id, new ScreenModel(p.cols, p.rows));

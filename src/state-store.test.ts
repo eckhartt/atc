@@ -23,13 +23,13 @@ test('it round-trips the fleet', () => {
   });
 
   store.writeFleet([
-    { name: 'auth-bug', cwd: '/x', claudeId: 'c1' },
-    { name: 'refactor', cwd: '/y', claudeId: 'c2' },
+    { name: 'auth-bug', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+    { name: 'refactor', cwd: '/y', claudeId: 'c2', agent: 'claude' },
   ]);
 
   expect(store.loadFleet()).toStrictEqual([
-    { name: 'auth-bug', cwd: '/x', claudeId: 'c1' },
-    { name: 'refactor', cwd: '/y', claudeId: 'c2' },
+    { name: 'auth-bug', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+    { name: 'refactor', cwd: '/y', claudeId: 'c2', agent: 'claude' },
   ]);
 });
 
@@ -40,10 +40,12 @@ test('it replaces the fleet wholesale on write', () => {
     store.stop();
   });
 
-  store.writeFleet([{ name: 'one', cwd: '/x', claudeId: 'c1' }]);
-  store.writeFleet([{ name: 'two', cwd: '/y', claudeId: 'c2' }]);
+  store.writeFleet([{ name: 'one', cwd: '/x', claudeId: 'c1', agent: 'claude' }]);
+  store.writeFleet([{ name: 'two', cwd: '/y', claudeId: 'c2', agent: 'claude' }]);
 
-  expect(store.loadFleet()).toStrictEqual([{ name: 'two', cwd: '/y', claudeId: 'c2' }]);
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'two', cwd: '/y', claudeId: 'c2', agent: 'claude' },
+  ]);
 });
 
 test('it seeds the fleet from a legacy fleet.json once', () => {
@@ -58,7 +60,9 @@ test('it seeds the fleet from a legacy fleet.json once', () => {
     store.stop();
   });
 
-  expect(store.loadFleet()).toStrictEqual([{ name: 'seeded', cwd: '/z', claudeId: 'c9' }]);
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'seeded', cwd: '/z', claudeId: 'c9', agent: 'claude' },
+  ]);
 });
 
 test('it never overwrites an existing fleet table from the legacy file', () => {
@@ -70,7 +74,7 @@ test('it never overwrites an existing fleet table from the legacy file', () => {
 
   const first = new StateStore(dbPath, legacy);
 
-  first.writeFleet([{ name: 'fresh', cwd: '/new', claudeId: 'c1' }]);
+  first.writeFleet([{ name: 'fresh', cwd: '/new', claudeId: 'c1', agent: 'claude' }]);
   first.stop();
 
   const second = new StateStore(dbPath, legacy);
@@ -79,7 +83,9 @@ test('it never overwrites an existing fleet table from the legacy file', () => {
     second.stop();
   });
 
-  expect(second.loadFleet()).toStrictEqual([{ name: 'fresh', cwd: '/new', claudeId: 'c1' }]);
+  expect(second.loadFleet()).toStrictEqual([
+    { name: 'fresh', cwd: '/new', claudeId: 'c1', agent: 'claude' },
+  ]);
 });
 
 test('it records hook events into the trail', () => {
@@ -166,4 +172,46 @@ test('it lists spawn directories most recent first without duplicates', async ()
   store.recordSpawnDir('/a');
 
   expect(store.collectSpawnDirs()).toStrictEqual(['/a', '/b']);
+});
+
+test('it round-trips a grok fleet row', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.writeFleet([{ name: 'mixed', cwd: '/g', claudeId: 'g1', agent: 'grok' }]);
+
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'mixed', cwd: '/g', claudeId: 'g1', agent: 'grok' },
+  ]);
+});
+
+test('it loads a fleet written before the agent column as claude', () => {
+  const dbPath = join(setupDir(), 'state.db');
+
+  const db = new Database(dbPath);
+
+  db.run(`
+    CREATE TABLE fleet (
+      claude_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      grp TEXT
+    );
+  `);
+
+  db.run("INSERT INTO fleet (claude_id, name, cwd, grp) VALUES ('c1', 'old', '/x', NULL)");
+  db.close();
+
+  const store = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'old', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+  ]);
 });

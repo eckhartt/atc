@@ -1,5 +1,15 @@
 import type { HookEvent } from './hooks';
 
+export type AgentKind = 'claude' | 'grok';
+
+/**
+ * Missing, empty, and unknown values become Claude so a fleet written
+ * before the agent column still restores as Claude.
+ */
+export function toAgentKind(raw: unknown): AgentKind {
+  return raw === 'grok' ? 'grok' : 'claude';
+}
+
 export interface SpawnOptions {
   readonly prompt: string;
 

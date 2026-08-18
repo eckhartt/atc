@@ -1,4 +1,5 @@
 import { basename } from 'node:path';
+import type { AgentKind } from './agent-adapter';
 import type { Dims } from './attach-registry';
 import { OutboundQueue } from './outbound-queue';
 import type { SocketWriter } from './outbound-queue';
@@ -15,6 +16,7 @@ interface SpawnParams {
   readonly rows: number;
   readonly resume: boolean | string;
   readonly namedBy: 'user' | 'auto';
+  readonly agent: AgentKind;
 }
 
 export interface DaemonContext {
@@ -369,6 +371,20 @@ export class DaemonConnection {
       resume = rawResume;
     }
 
+    const rawAgent = req.p?.['agent'];
+
+    if (rawAgent !== undefined && rawAgent !== 'claude' && rawAgent !== 'grok') {
+      this.sendErr(req.id, 'bad_args', "session.spawn agent must be 'claude' or 'grok'");
+
+      return;
+    }
+
+    if (rawAgent === 'grok') {
+      this.sendErr(req.id, 'unsupported', "no adapter for agent 'grok'");
+
+      return;
+    }
+
     const session = this.ctx.spawnSession({
       cwd,
       name: name === '' ? basename(cwd) : name,
@@ -377,6 +393,7 @@ export class DaemonConnection {
       rows: typeof req.p?.['rows'] === 'number' ? req.p['rows'] : 24,
       resume,
       namedBy: name === '' ? 'auto' : 'user',
+      agent: 'claude',
     });
 
     this.sendOk(req.id, { session });
