@@ -192,7 +192,7 @@ async function spawnSession(ctx: TestContext, pty: IPty, name: string) {
   await ctx.waitFor('FAKE_CLAUDE_UP');
 }
 
-async function spawnGrokSession(ctx: TestContext, pty: IPty, name: string, group = '') {
+async function spawnGrokSession(ctx: TestContext, pty: IPty, name: string) {
   pty.write('n');
 
   await ctx.waitFor('spawn: agent');
@@ -212,11 +212,6 @@ async function spawnGrokSession(ctx: TestContext, pty: IPty, name: string, group
 
   ctx.reset();
   pty.write(`${name}\r`);
-
-  await ctx.waitFor('spawn: group');
-
-  ctx.reset();
-  pty.write(`${group}\r`);
 
   await ctx.waitFor('spawn: initial prompt');
 
