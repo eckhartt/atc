@@ -32,12 +32,24 @@ function setupMCP(): MCPContext {
   mkdirSync(join(home, '.local', 'state', 'atc'), { recursive: true });
 
   const fakeClaude = join(home, 'fake-claude');
+  const fakeGrok = join(home, 'fake-grok');
+  const hookReport = `"${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report`;
 
   writeFileSync(
     fakeClaude,
     `#!/usr/bin/env bash
 echo "FAKE_CLAUDE_UP args: $@"
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | ${hookReport}
+sleep 30
+`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    fakeGrok,
+    `#!/usr/bin/env bash
+echo "FAKE_GROK_UP args: $@"
+printf '{"hookEventName":"session_start","sessionId":"fake-grok-1","cwd":"%s"}' "$PWD" | ${hookReport}
 sleep 30
 `,
     { mode: 0o755 },
@@ -45,7 +57,7 @@ sleep 30
 
   writeFileSync(
     join(home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [], grokBin: fakeGrok, grokArgs: [] }),
   );
 
   const proc: Subprocess<'pipe', 'pipe', 'ignore'> = Bun.spawn(

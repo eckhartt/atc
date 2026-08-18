@@ -37,6 +37,8 @@ function setupTest(): TestContext {
   mkdirSync(join(home, '.config', 'atc'), { recursive: true });
 
   const fakeClaude = join(home, 'fake-claude');
+  const fakeGrok = join(home, 'fake-grok');
+  const hookReport = `"${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report`;
 
   // Like real Claude Code, the fake repaints its screen on SIGWINCH — the
   // attach jiggle depends on exactly that behavior for replay.
@@ -47,9 +49,9 @@ ARGS="$*"
 paint() { echo "FAKE_CLAUDE_UP args: $ARGS"; }
 trap paint WINCH
 paint
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | ${hookReport}
 sleep 0.3
-printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | ${hookReport}
 # bash 3.2 read -t takes whole seconds; a fraction times out immediately
 for _ in $(seq 1 300); do
   if read -t 1 -r line; then echo "GOT:$line"; fi
@@ -58,9 +60,46 @@ done
     { mode: 0o755 },
   );
 
+  // Grok speaks camelCase envelopes. Drop fake-grok-hold-start to skip
+  // SessionStart, or fake-grok-events.jsonl to replace the default
+  // permission_prompt with extra hook lines.
+  writeFileSync(
+    fakeGrok,
+    `#!/usr/bin/env bash
+ARGS="$*"
+paint() { echo "FAKE_GROK_UP args: $ARGS"; }
+trap paint WINCH
+paint
+idle() {
+  for _ in $(seq 1 300); do
+    if read -t 1 -r line; then echo "GOT:$line"; fi
+  done
+}
+if [ -f "$HOME/fake-grok-hold-start" ]; then
+  idle
+  exit 0
+fi
+printf '{"hookEventName":"session_start","sessionId":"fake-grok-1","cwd":"%s"}' "$PWD" | ${hookReport}
+if [ -f "$HOME/fake-grok-events.jsonl" ]; then
+  sleep 0.3
+  while IFS= read -r ev; do
+    [ -n "$ev" ] || continue
+    printf '%s' "$ev" | ${hookReport}
+    sleep 0.2
+  done < "$HOME/fake-grok-events.jsonl"
+else
+  sleep 0.3
+  printf '{"hookEventName":"notification","sessionId":"fake-grok-1","notificationType":"permission_prompt","message":"allow edit?"}' | ${hookReport}
+fi
+echo "FAKE_GROK_HOOKS_DONE"
+idle
+`,
+    { mode: 0o755 },
+  );
+
   writeFileSync(
     join(home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [], grokBin: fakeGrok, grokArgs: [] }),
   );
 
   let pty: IPty | null = null;
@@ -151,6 +190,40 @@ async function spawnSession(ctx: TestContext, pty: IPty, name: string) {
   pty.write('\r');
 
   await ctx.waitFor('FAKE_CLAUDE_UP');
+}
+
+async function spawnGrokSession(ctx: TestContext, pty: IPty, name: string, group = '') {
+  pty.write('n');
+
+  await ctx.waitFor('spawn: agent');
+
+  ctx.reset();
+  pty.write('\u001B[B');
+
+  await ctx.waitFor('\u001B[7mGrok');
+
+  pty.write('\r');
+
+  await ctx.waitFor('spawn: directory');
+
+  pty.write('\r');
+
+  await ctx.waitFor('spawn: name');
+
+  ctx.reset();
+  pty.write(`${name}\r`);
+
+  await ctx.waitFor('spawn: group');
+
+  ctx.reset();
+  pty.write(`${group}\r`);
+
+  await ctx.waitFor('spawn: initial prompt');
+
+  ctx.reset();
+  pty.write('\r');
+
+  await ctx.waitFor('FAKE_GROK_UP');
 }
 
 async function waitForStatus(statusPath: string, needle: string) {
@@ -308,7 +381,13 @@ test('it opens the overlay with a configured leader key', async () => {
 
   writeFileSync(
     join(ctx.home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: join(ctx.home, 'fake-claude'), claudeArgs: [], leader: 'ctrl-]' }),
+    JSON.stringify({
+      claudeBin: join(ctx.home, 'fake-claude'),
+      claudeArgs: [],
+      grokBin: join(ctx.home, 'fake-grok'),
+      grokArgs: [],
+      leader: 'ctrl-]',
+    }),
   );
 
   const pty = ctx.boot();
@@ -776,4 +855,345 @@ test('it explains a revive that has no saved transcript instead of failing silen
   pty.write('P');
 
   await ctx.waitFor('nothing to resume yet');
+}, 15_000);
+
+test('it spawns a grok session without resume or -p and marks it resumable', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'groksess');
+
+  expect(ctx.read()).toInclude('FAKE_GROK_UP args: --no-leader');
+  expect(ctx.read()).not.toInclude('--resume');
+  expect(ctx.read()).not.toInclude('-p');
+  expect(ctx.read()).not.toInclude('FAKE_CLAUDE_UP');
+
+  const dbPath = join(ctx.home, '.local', 'state', 'atc', 'atc.db');
+  const start = Date.now();
+  let fleet: unknown[] = [];
+
+  while (Date.now() - start < 3000) {
+    try {
+      const db = new Database(dbPath, { readonly: true });
+
+      fleet = db.query('SELECT name, cwd, claude_id AS claudeId, agent FROM fleet').all();
+
+      db.close();
+    } catch {}
+
+    if (fleet.length > 0) {
+      break;
+    }
+
+    await Bun.sleep(50);
+  }
+
+  expect(fleet).toStrictEqual([
+    { name: 'groksess', cwd: ctx.home, claudeId: 'fake-grok-1', agent: 'grok' },
+  ]);
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
+  await ctx.waitFor('\u001B[90mg\u001B[0m');
+}, 15_000);
+
+test('it marks a grok session done on end-turn Stop', async () => {
+  await using ctx = setupTest();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'stop',
+      sessionId: 'fake-grok-1',
+      reason: 'end_turn',
+    })}\n`,
+  );
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokdone');
+
+  await ctx.waitFor('FAKE_GROK_HOOKS_DONE');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('done');
+}, 15_000);
+
+test('it marks a grok session done on StopCancelled', async () => {
+  await using ctx = setupTest();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'stop_cancelled',
+      sessionId: 'fake-grok-1',
+      reason: 'user_interrupt',
+    })}\n`,
+  );
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokcancel');
+
+  await ctx.waitFor('FAKE_GROK_HOOKS_DONE');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('done');
+}, 15_000);
+
+test('it keeps a grok session running when a hook names a subagent', async () => {
+  await using ctx = setupTest();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'stop',
+      sessionId: 'fake-grok-1',
+      reason: 'end_turn',
+      subagentType: 'explore',
+    })}\n`,
+  );
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'groksub');
+
+  await ctx.waitFor('FAKE_GROK_HOOKS_DONE');
+
+  ctx.reset();
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('running');
+
+  expect(ctx.read()).not.toInclude('NEEDS YOU');
+  expect(ctx.read()).not.toInclude('done');
+}, 15_000);
+
+test('it restores a grok session with grok --resume after a crash', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokfleet');
+
+  const dbPath = join(ctx.home, '.local', 'state', 'atc', 'atc.db');
+  const start = Date.now();
+  let fleet: unknown[] = [];
+
+  while (Date.now() - start < 3000) {
+    try {
+      const db = new Database(dbPath, { readonly: true });
+
+      fleet = db.query('SELECT name, cwd, claude_id AS claudeId, agent FROM fleet').all();
+
+      db.close();
+    } catch {}
+
+    if (fleet.length > 0) {
+      break;
+    }
+
+    await Bun.sleep(50);
+  }
+
+  pty.kill();
+
+  try {
+    const pid = Number(readFileSync(join(ctx.home, 'atc-daemon.pid'), 'utf8'));
+
+    process.kill(pid, 'SIGKILL');
+  } catch {}
+
+  await Bun.sleep(300); // let the killed processes release their sockets before rebooting
+
+  expect(fleet).toStrictEqual([
+    { name: 'grokfleet', cwd: ctx.home, claudeId: 'fake-grok-1', agent: 'grok' },
+  ]);
+
+  ctx.reset();
+
+  const rebooted = ctx.boot();
+
+  await ctx.waitFor('restore last fleet (1 sessions)');
+
+  ctx.reset();
+  rebooted.write('R');
+
+  await ctx.waitFor('FAKE_GROK_UP');
+  await ctx.waitFor('--resume fake-grok-1');
+
+  expect(ctx.read()).not.toInclude('claude --resume');
+  expect(ctx.read()).not.toInclude('FAKE_CLAUDE_UP');
+}, 15_000);
+
+test('it yanks a grok resume command once the id is captured', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokyank');
+
+  await ctx.waitFor('FAKE_GROK_HOOKS_DONE');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('need you: grokyank');
+
+  ctx.reset();
+  pty.write('y');
+
+  await ctx.waitFor('resume cmd copied');
+
+  const b64 = ctx.read().split(']52;c;')[1]?.split(BEL)[0];
+
+  if (b64 === undefined) {
+    throw new Error('no OSC52 sequence in output');
+  }
+
+  const cmd = Buffer.from(b64, 'base64').toString();
+
+  expect(cmd).toBe(`cd '${ctx.home}' && grok --resume fake-grok-1`);
+}, 15_000);
+
+test('it yanks a grok command without --resume before SessionStart', async () => {
+  await using ctx = setupTest();
+
+  writeFileSync(join(ctx.home, 'fake-grok-hold-start'), '');
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokearly');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('grokearly');
+
+  ctx.reset();
+  pty.write('y');
+
+  await ctx.waitFor('resume cmd copied');
+
+  const b64 = ctx.read().split(']52;c;')[1]?.split(BEL)[0];
+
+  if (b64 === undefined) {
+    throw new Error('no OSC52 sequence in output');
+  }
+
+  const cmd = Buffer.from(b64, 'base64').toString();
+
+  expect(cmd).toBe(`cd '${ctx.home}' && grok`);
+}, 15_000);
+
+test('it ignores H on a grok row instead of opening the eject picker', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokheadless');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('grokheadless');
+
+  ctx.reset();
+  pty.write('H');
+
+  await Bun.sleep(200); // H on a Grok row is a no-op; no screen change to wait for
+
+  expect(ctx.read()).not.toInclude('eject: headless instruction');
+
+  pty.write('?');
+
+  await ctx.waitFor('adopt an external session');
+
+  expect(ctx.read()).not.toInclude('eject: headless instruction');
+}, 15_000);
+
+test('it adopts grok with --no-leader and without --resume', async () => {
+  await using ctx = setupTest();
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('adopt an existing session');
+
+  pty.write('r');
+
+  await ctx.waitFor('adopt: agent');
+
+  ctx.reset();
+  pty.write('\u001B[B');
+
+  await ctx.waitFor('\u001B[7mGrok');
+
+  pty.write('\r');
+
+  await ctx.waitFor('adopt: directory');
+
+  pty.write('\r');
+
+  await ctx.waitFor('adopt: name');
+
+  pty.write('adoptedg\r');
+
+  await ctx.waitFor('adopt: group');
+
+  ctx.reset();
+  pty.write('\r');
+
+  await ctx.waitFor('FAKE_GROK_UP');
+
+  expect(ctx.read()).toInclude('FAKE_GROK_UP args: --no-leader');
+  expect(ctx.read()).not.toInclude('--resume');
+  expect(ctx.read()).not.toInclude('-p');
+  expect(ctx.read()).not.toInclude('FAKE_CLAUDE_UP');
+}, 15_000);
+
+test('it keeps NEEDS YOU when grok emits idle_prompt after permission_prompt', async () => {
+  await using ctx = setupTest();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'notification',
+      sessionId: 'fake-grok-1',
+      notificationType: 'permission_prompt',
+      message: 'allow edit?',
+    })}\n${JSON.stringify({
+      hookEventName: 'notification',
+      sessionId: 'fake-grok-1',
+      notificationType: 'idle_prompt',
+    })}\n`,
+  );
+
+  const pty = ctx.boot();
+
+  await ctx.waitFor('atc — control tower');
+
+  await spawnGrokSession(ctx, pty, 'grokidle');
+
+  await ctx.waitFor('FAKE_GROK_HOOKS_DONE');
+
+  pty.write(CTRL_SPACE);
+
+  await ctx.waitFor('NEEDS YOU');
 }, 15_000);
