@@ -32,12 +32,24 @@ function setupMCP(): MCPContext {
   mkdirSync(join(home, '.local', 'state', 'atc'), { recursive: true });
 
   const fakeClaude = join(home, 'fake-claude');
+  const fakeGrok = join(home, 'fake-grok');
+  const hookReport = `"${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report`;
 
   writeFileSync(
     fakeClaude,
     `#!/usr/bin/env bash
 echo "FAKE_CLAUDE_UP args: $@"
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | ${hookReport}
+sleep 30
+`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    fakeGrok,
+    `#!/usr/bin/env bash
+echo "FAKE_GROK_UP args: $@"
+printf '{"hookEventName":"session_start","sessionId":"fake-grok-1","cwd":"%s"}' "$PWD" | ${hookReport}
 sleep 30
 `,
     { mode: 0o755 },
@@ -45,7 +57,7 @@ sleep 30
 
   writeFileSync(
     join(home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [], grokBin: fakeGrok, grokArgs: [] }),
   );
 
   const proc: Subprocess<'pipe', 'pipe', 'ignore'> = Bun.spawn(
@@ -214,6 +226,7 @@ test('it spawns and lists a session through tool calls', async () => {
 
   expect(spawned['isError']).toBeUndefined();
   expect(getText(spawned)).toInclude('"name": "mcp-spawned"');
+  expect(getText(spawned)).toInclude('"agent": "claude"');
 
   ctx.sendRPC({
     jsonrpc: '2.0',
@@ -227,6 +240,55 @@ test('it spawns and lists a session through tool calls', async () => {
   const listed = getResult(listResponse);
 
   expect(getText(listed)).toInclude('mcp-spawned');
+});
+
+test('it advertises agent on atc_session_spawn and rejects an unknown value', async () => {
+  const ctx = setupMCP();
+
+  ctx.sendRPC({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+
+  await ctx.waitForResponse(1);
+
+  ctx.sendRPC({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+  const listResponse = await ctx.waitForResponse(2);
+
+  const listed = getResult(listResponse);
+  const tools = listed['tools'];
+
+  if (!Array.isArray(tools)) {
+    throw new TypeError('tools is not an array');
+  }
+
+  const spawnTool: unknown = tools.find(
+    (tool) => isRecord(tool) && tool['name'] === 'atc_session_spawn',
+  );
+
+  if (!isRecord(spawnTool) || !isRecord(spawnTool['inputSchema'])) {
+    throw new TypeError('atc_session_spawn has no input schema');
+  }
+
+  const properties = spawnTool['inputSchema']['properties'];
+
+  if (!isRecord(properties) || !isRecord(properties['agent'])) {
+    throw new TypeError('atc_session_spawn schema has no agent field');
+  }
+
+  expect(properties['agent']['enum']).toStrictEqual(['claude', 'grok']);
+
+  ctx.sendRPC({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'atc_session_spawn', arguments: { cwd: ctx.home, agent: 'codex' } },
+  });
+
+  const failResponse = await ctx.waitForResponse(3);
+
+  const failed = getResult(failResponse);
+
+  expect(failed['isError']).toBeTrue();
+  expect(getText(failed)).toInclude('agent must be');
 });
 
 test('it reports a failed tool call with isError instead of crashing', async () => {

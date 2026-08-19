@@ -10,15 +10,23 @@ import { countSessionStates, sortGroupedSessionViews, sortSessionViews } from '.
 import type { SessionState } from './sessions';
 import { ansi, cols, drawHelp, drawHome, drawOverlay, drawPicker, drawStatusBar, rows } from './ui';
 
+type AgentKind = 'claude' | 'grok';
+
 type Mode =
   | 'home'
   | 'attached'
   | 'overlay'
   | 'help'
+  | 'picker-agent'
   | 'picker-dir'
   | 'picker-name'
   | 'picker-prompt'
   | 'picker-eject';
+
+const AGENT_PICKS = [
+  { agent: 'claude' as const, label: 'Claude' },
+  { agent: 'grok' as const, label: 'Grok' },
+];
 
 interface MirrorSession {
   id: string;
@@ -34,6 +42,7 @@ interface MirrorSession {
   kind: 'pty' | 'jsonl';
   alive: boolean;
   resumable: boolean;
+  agent: AgentKind;
 }
 
 let mode: Mode = 'home';
@@ -58,6 +67,8 @@ let pickerSelected = 0;
 let spawnDir = '';
 let spawnName = '';
 let spawnResume = false;
+let spawnAgent: AgentKind = 'claude';
+let lastUsedAgent: AgentKind = 'claude';
 const stdout = process.stdout;
 
 // Full height: the atc status bar only exists on home/overlay screens;
@@ -251,7 +262,17 @@ function openOverlay() {
 function renderPicker() {
   const verb = spawnResume ? 'adopt' : 'spawn';
 
-  if (mode === 'picker-dir') {
+  if (mode === 'picker-agent') {
+    pickerSelected = Math.min(pickerSelected, AGENT_PICKS.length - 1);
+
+    drawPicker({
+      title: `${verb}: agent`,
+      items: AGENT_PICKS.map((pick) => pick.label),
+      selected: pickerSelected,
+      input: pickerInput,
+      hint: '↑↓ move · ⏎ select · esc cancel',
+    });
+  } else if (mode === 'picker-dir') {
     const items = pickMatches(allDirs, pickerInput).map((d) => formatDir(d));
 
     pickerSelected = Math.min(pickerSelected, Math.max(0, Math.min(items.length, 10) - 1));
@@ -295,9 +316,19 @@ function renderPicker() {
   scheduleStatus();
 }
 
-async function openDirPicker(resume = false) {
+function openAgentPicker(resume = false) {
   spawnResume = resume;
+  spawnAgent = lastUsedAgent;
+  pickerInput = '';
+  pickerSelected = lastUsedAgent === 'grok' ? 1 : 0;
+  mode = 'picker-agent';
 
+  stdout.write(ansi.clear);
+
+  renderPicker();
+}
+
+async function openDirPicker() {
   let recent: string[] = [];
 
   try {
@@ -344,6 +375,7 @@ async function spawnFromPicker(prompt: string) {
       cols: cols(),
       rows: ptyRows(),
       ...(spawnResume ? { resume: true } : {}),
+      agent: spawnAgent,
     });
 
     const spawned = toMirrorSession(ok['session']);
@@ -410,6 +442,7 @@ function toMirrorSession(value: unknown): MirrorSession | null {
     kind: value['kind'] === 'jsonl' ? 'jsonl' : 'pty',
     alive: value['alive'],
     resumable: typeof value['claudeId'] === 'string',
+    agent: value['agent'] === 'grok' ? 'grok' : 'claude',
   };
 }
 
@@ -429,6 +462,7 @@ function upsertMirror(d: Readonly<MirrorSession>) {
     existing.kind = d.kind;
     existing.alive = d.alive;
     existing.resumable = d.resumable;
+    existing.agent = d.agent;
   }
 }
 
@@ -507,7 +541,15 @@ function applyDaemonEvent(e: EventMsg) {
           s.lastMsg = e['lastMsg'];
         }
 
+        if (e['agent'] === 'grok' || e['agent'] === 'claude') {
+          s.agent = e['agent'];
+        }
+
         if (typeof e['claudeId'] === 'string') {
+          if (!s.resumable) {
+            lastUsedAgent = s.agent;
+          }
+
           s.resumable = true;
         }
       }
@@ -735,7 +777,7 @@ function applyOverlayKey(buf: Buffer) {
   }
 
   if (ch === 'n') {
-    void openDirPicker();
+    openAgentPicker();
 
     return;
   }
@@ -772,7 +814,7 @@ function applyOverlayKey(buf: Buffer) {
     return;
   }
 
-  if (ch === 'H' && sel !== undefined && sel.kind === 'pty' && sel.alive) {
+  if (ch === 'H' && sel !== undefined && sel.kind === 'pty' && sel.alive && sel.agent !== 'grok') {
     ejectTarget = sel.id;
     pickerInput = '';
     mode = 'picker-eject';
@@ -791,7 +833,7 @@ function applyOverlayKey(buf: Buffer) {
   }
 
   if (ch === 'r') {
-    void openDirPicker(true);
+    openAgentPicker(true);
 
     return;
   }
@@ -893,7 +935,7 @@ function applyTextKey(buf: Buffer, onSubmit: () => void, onCancel: () => void) {
     return;
   }
 
-  if (mode === 'picker-dir') {
+  if (mode === 'picker-dir' || mode === 'picker-agent') {
     if (isDown(buf)) {
       pickerSelected++;
 
@@ -933,6 +975,7 @@ const boot = await bootDaemonClient();
 let client = boot.client;
 let daemonStale = boot.stale;
 
+lastUsedAgent = boot.lastUsedAgent;
 client.onEvent = applyDaemonEvent;
 
 await refreshMirror();
@@ -989,6 +1032,7 @@ async function restartDaemon() {
 
   client = next.client;
   daemonStale = next.stale;
+  lastUsedAgent = next.lastUsedAgent;
   client.onEvent = applyDaemonEvent;
 
   await sendQuiet('fleet.restore', { cols: cols(), rows: ptyRows() });
@@ -1032,13 +1076,13 @@ process.stdin.on('data', (buf: Buffer) => {
       const ch = buf.toString();
 
       if (ch === 'n') {
-        void openDirPicker();
+        openAgentPicker();
 
         return;
       }
 
       if (ch === 'r') {
-        void openDirPicker(true);
+        openAgentPicker(true);
 
         return;
       }
@@ -1062,6 +1106,20 @@ process.stdin.on('data', (buf: Buffer) => {
     }
     case 'help': {
       applyHelpKey(buf);
+
+      return;
+    }
+    case 'picker-agent': {
+      applyTextKey(
+        buf,
+        () => {
+          spawnAgent = AGENT_PICKS[pickerSelected]?.agent ?? 'claude';
+          void openDirPicker();
+        },
+        () => {
+          toBase();
+        },
+      );
 
       return;
     }
@@ -1090,7 +1148,13 @@ process.stdin.on('data', (buf: Buffer) => {
           renderPicker();
         },
         () => {
-          toBase();
+          pickerInput = '';
+          pickerSelected = spawnAgent === 'grok' ? 1 : 0;
+          mode = 'picker-agent';
+
+          stdout.write(ansi.clear);
+
+          renderPicker();
         },
       );
 

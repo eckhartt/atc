@@ -1,14 +1,18 @@
 # Architecture overview
 
-atc multiplexes Claude Code sessions without a tiling layout engine: one focused session owns the
-whole terminal, and everything else is reached through a keyboard-driven overlay. The design bet is
-that the pain of many-session work is attention routing, not window management.
+atc multiplexes Claude Code and Grok Build sessions without a tiling layout engine: one focused
+session owns the whole terminal, and everything else is reached through a keyboard-driven overlay.
+The design bet is that the pain of many-session work is attention routing, not window management.
+`n` and `r` open an agent picker first; last-used comes from `daemon.hello` and is written on
+SessionStart of a deliberate spawn. A fleet restore does not stamp it. MCP spawn ignores last-used
+and defaults to Claude.
 
 ## Process model
 
 ```text
 atc (client TUI) ── NDJSON protocol ──> atcd (atc daemon)
                                          ├── PTY per session ──> claude --settings <generated>
+                                         │                    or grok --no-leader
                                          ├── reporter socket (hook + statusline reports)
                                          └── SQLite state in ~/.local/state/atc/
 ```
@@ -16,22 +20,22 @@ atc (client TUI) ── NDJSON protocol ──> atcd (atc daemon)
 - The daemon owns the sessions; the first `atc` invocation boots it if its socket is absent, then
   connects as a thin client speaking the [wire protocol](./protocol.md). Clients are disposable —
   quitting or crashing one leaves the fleet running. See the [daemon architecture](./daemon.md).
-- Each session is a `claude` child process on its own PTY (`bun-pty`) inside the daemon. Attached
-  clients receive the session's output as sequenced events; a slow client desyncs and resynchronizes
-  rather than stalling the PTY or other clients.
+- Each session is a `claude` or `grok` child process on its own PTY (`bun-pty`) inside the daemon.
+  Attached clients receive the session's output as sequenced events; a slow client desyncs and
+  resynchronizes rather than stalling the PTY or other clients.
 - A per-session vt state machine (`@xterm/headless`) consumes every PTY byte continuously, so
   attaching is an instant serialized-screen replay — no resize jiggle, no reliance on the hosted
   agent repainting itself.
 - `src/sessions.ts` is the state machine: session states are `running`, `needs_you`, `done`,
   `exited`, each with an `unread` attention flag.
 
-## Claude integration
+## Agent integration
 
-Sessions are instrumented via a generated settings file passed as `claude --settings`:
+Claude sessions are instrumented via a generated settings file passed as `claude --settings`:
 
 - Hooks (`SessionStart`, `Notification`, `Stop`, `UserPromptSubmit`, `SessionEnd`) run
   `atc hook-report`, which forwards the event JSON to atc's unix socket. `SessionStart` carries the
-  Claude session id at spawn/resume time, which is what makes the fleet restorable before any
+  agent session id at spawn/resume time, which is what makes the fleet restorable before any
   interaction.
 - The statusline command (`atc statusline`) chains the user's own configured statusline, then
   appends the fleet segment read from `status.json`, so fleet state renders inside Claude Code's own
@@ -40,14 +44,21 @@ Sessions are instrumented via a generated settings file passed as `claude --sett
 - Session names are pulled from Claude's transcripts (`custom-title` lines from `/rename`, `summary`
   lines as fallback) — atc is not the naming authority.
 
+Grok sessions use a dedicated hook file at `$GROK_HOME/hooks/atc-reporter.json` (`~/.grok` when
+`GROK_HOME` is unset). atc never writes that path; `atc grok-hooks` prints the file to install. The
+same reporter forwards Grok camelCase envelopes. Config keys `grokBin` and `grokArgs` select the
+binary; atc always appends `--no-leader`. Grok names come from `summary.json`. Yank of a Grok
+session pastes `cd '…' && grok --resume <id>`, or `cd '…' && grok` when no id is captured. Headless
+eject (`H`) is Claude-only; a Grok row hides and ignores it.
+
 ## State
 
 All in `~/.local/state/atc/`:
 
-| File          | Purpose                                                                                                                                              |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, and the spawn-directory history for the picker.             |
-| `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol. |
+| File          | Purpose                                                                                                                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, the spawn-directory history for the picker, and last-used agent (written on a deliberate-spawn SessionStart, advertised on `daemon.hello`). |
+| `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol.                                                                                 |
 
 The daemon's pid file (`atc-daemon.pid`) lives beside its sockets in `$XDG_RUNTIME_DIR`, not in the
 state directory: a pid is only meaningful for the daemon owning those sockets, and a shared location
@@ -56,16 +67,17 @@ would let one runtime's stale-daemon restart kill another runtime's healthy daem
 ## Recovery model
 
 A client crash costs nothing — the daemon keeps hosting the fleet. If the daemon itself dies, its
-children die with it (PTY close → SIGHUP), but Claude streams transcripts to disk continuously, so
-sessions are data, not processes. `claude --resume <id>` reconstructs any of them; the fleet table
-makes that a single keypress (`R`) after a cold boot. The same mechanism powers adopt (`r`) and
-yank/eject (`y`/`Y`).
+children die with it (PTY close → SIGHUP), but each agent streams transcripts to disk continuously,
+so sessions are data, not processes. Restore reconstructs each row with the matching CLI
+(`claude --resume <id>` or `grok --resume <id>`); the fleet table makes that a single keypress (`R`)
+after a cold boot. The same mechanism powers adopt (`r`) and yank/eject (`y`/`Y`). `H` is
+unsupported for Grok.
 
 Reviving a whole fleet is incremental but visible from the start. Every fleet entry registers as a
 session without a terminal before any process boots — each broadcasts `session.added`, so clients
 list the full incoming fleet immediately, marked "waiting to restore". Terminals then attach one at
 a time in recency order (latest hook event in the trail first, from the events table): the first
 attaches at once so the caller can attach, and each later one waits for the previous session to
-report its `SessionStart` hook, so an update-triggered restart does not boot a dozen Claude
-processes in the same instant and stall the machine. A per-session cap (`restoreBootTimeoutMs`)
-keeps a session that never reports — or dies mid-resume — from holding up the rest.
+report its `SessionStart` hook, so an update-triggered restart does not boot a dozen agent processes
+in the same instant and stall the machine. A per-session cap (`restoreBootTimeoutMs`) keeps a
+session that never reports — or dies mid-resume — from holding up the rest.

@@ -74,14 +74,44 @@ function setupDaemonProc(
     mkdirSync(join(freshHome, '.local', 'state', 'atc'), { recursive: true });
 
     const fakeClaude = join(freshHome, 'fake-claude');
+    const fakeGrok = join(freshHome, 'fake-grok');
+    const hookReport = `"${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report`;
 
     writeFileSync(
       fakeClaude,
       `#!/usr/bin/env bash
 echo "FAKE_CLAUDE_UP args: $@"
-printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"SessionStart","session_id":"fake-1","transcript_path":"'"$HOME"'/fake-transcript.jsonl"}' | ${hookReport}
 sleep 0.3
-printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | "${process.execPath}" "${join(repo, 'src', 'cli.ts')}" hook-report
+printf '{"hook_event_name":"Notification","session_id":"fake-1","message":"needs permission"}' | ${hookReport}
+while read -r line; do echo "GOT:$line"; done
+sleep 30
+`,
+      { mode: 0o755 },
+    );
+
+    writeFileSync(
+      fakeGrok,
+      `#!/usr/bin/env bash
+echo "FAKE_GROK_UP args: $@"
+if [ -f "$HOME/fake-grok-hold-start" ]; then
+  while read -r line; do echo "GOT:$line"; done
+  sleep 30
+  exit 0
+fi
+printf '{"hookEventName":"session_start","sessionId":"fake-grok-1","cwd":"%s"}' "$PWD" | ${hookReport}
+if [ -f "$HOME/fake-grok-events.jsonl" ]; then
+  sleep 0.3
+  while IFS= read -r ev; do
+    [ -n "$ev" ] || continue
+    printf '%s' "$ev" | ${hookReport}
+    sleep 0.2
+  done < "$HOME/fake-grok-events.jsonl"
+else
+  sleep 0.3
+  printf '{"hookEventName":"notification","sessionId":"fake-grok-1","notificationType":"permission_prompt","message":"allow edit?"}' | ${hookReport}
+fi
+echo "FAKE_GROK_HOOKS_DONE"
 while read -r line; do echo "GOT:$line"; done
 sleep 30
 `,
@@ -90,7 +120,7 @@ sleep 30
 
     writeFileSync(
       join(freshHome, '.config', 'atc', 'config.json'),
-      JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+      JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [], grokBin: fakeGrok, grokArgs: [] }),
     );
   }
 
@@ -490,8 +520,15 @@ sleep 30
 
   writeFileSync(
     join(home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+    JSON.stringify({
+      claudeBin: fakeClaude,
+      claudeArgs: [],
+      grokBin: join(home, 'fake-grok'),
+      grokArgs: [],
+    }),
   );
+
+  writeFileSync(join(home, 'fake-grok'), '#!/usr/bin/env bash\nsleep 30\n', { mode: 0o755 });
 
   writeFileSync(
     join(home, '.local', 'state', 'atc', 'fleet.json'),
@@ -567,17 +604,24 @@ sleep 30
 
   writeFileSync(
     join(home, '.config', 'atc', 'config.json'),
-    JSON.stringify({ claudeBin: fakeClaude, claudeArgs: [] }),
+    JSON.stringify({
+      claudeBin: fakeClaude,
+      claudeArgs: [],
+      grokBin: join(home, 'fake-grok'),
+      grokArgs: [],
+    }),
   );
+
+  writeFileSync(join(home, 'fake-grok'), '#!/usr/bin/env bash\nsleep 30\n', { mode: 0o755 });
 
   const dbPath = join(home, '.local', 'state', 'atc', 'atc.db');
 
   const seed = new StateStore(dbPath);
 
   seed.writeFleet([
-    { name: 'one', cwd: home, claudeId: 'fake-a' },
-    { name: 'two', cwd: home, claudeId: 'fake-b' },
-    { name: 'three', cwd: home, claudeId: 'fake-c' },
+    { name: 'one', cwd: home, claudeId: 'fake-a', agent: 'claude' },
+    { name: 'two', cwd: home, claudeId: 'fake-b', agent: 'claude' },
+    { name: 'three', cwd: home, claudeId: 'fake-c', agent: 'claude' },
   ]);
 
   seed.stop();
@@ -957,3 +1001,301 @@ test('it drops a slow client to desync and reports the dropped bytes', async () 
     dropped: expect.toBePositive() as number,
   });
 }, 20_000);
+
+test('it spawns a grok session and captures a grok descriptor from SessionStart', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  expect(ok['session']).toMatchObject({ agent: 'grok', alive: true });
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'needs_you');
+
+  const list = await client.sendRequest('session.list');
+
+  const sessions = getRecords(list, 'sessions');
+
+  expect(sessions).toHaveLength(1);
+
+  expect(sessions[0]).toMatchObject({
+    state: 'needs_you',
+    claudeId: 'fake-grok-1',
+    agent: 'grok',
+    lastMsg: 'allow edit?',
+  });
+});
+
+test('it yanks grok --resume after capture and grok before SessionStart', async () => {
+  const ctx = setupDaemonProc();
+
+  writeFileSync(join(ctx.home, 'fake-grok-hold-start'), '');
+
+  const client = await ctx.openClient();
+
+  await client.sendHello('atc/test');
+
+  const early = await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  const earlySession = getRecord(early, 'session');
+  const earlyID = getString(earlySession, 'id');
+
+  const welcome = await client.sendRequest('session.resumeCommand', { session: earlyID });
+
+  expect(welcome).toStrictEqual({ command: `cd '${ctx.home}' && grok` });
+
+  await client.sendRequest('session.kill', { session: earlyID });
+
+  rmSync(join(ctx.home, 'fake-grok-hold-start'));
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  const captured = await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  const capturedSession = getRecord(captured, 'session');
+  const capturedID = getString(capturedSession, 'id');
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'needs_you');
+
+  const resumed = await client.sendRequest('session.resumeCommand', { session: capturedID });
+
+  expect(resumed).toStrictEqual({ command: `cd '${ctx.home}' && grok --resume fake-grok-1` });
+});
+
+test('it restores a grok session via grok --resume, not claude --resume', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'needs_you');
+
+  ctx.proc.kill(9);
+
+  await ctx.proc.exited;
+
+  const revived = setupDaemonProc(ctx.home);
+
+  const client2 = await revived.openClient();
+
+  const replay: EventMsg[] = [];
+
+  client2.onEvent = (e) => {
+    replay.push(e);
+  };
+
+  await client2.sendHello('atc/test');
+
+  const restored = await client2.sendRequest('fleet.restore', { cols: 80, rows: 24 });
+
+  expect(restored).toStrictEqual({ restored: 1 });
+
+  const list = await client2.sendRequest('session.list');
+
+  const sessions = getRecords(list, 'sessions');
+
+  expect(sessions).toHaveLength(1);
+
+  const [restoredSession] = sessions;
+
+  if (restoredSession === undefined) {
+    throw new Error('no restored grok session');
+  }
+
+  expect(restoredSession).toMatchObject({ claudeId: 'fake-grok-1', agent: 'grok', alive: true });
+
+  const id = getString(restoredSession, 'id');
+
+  await client2.sendRequest('session.attach', { session: id, cols: 80, rows: 24 });
+
+  const output = await waitForEvent(
+    replay,
+    (e) => e.ev === 'session.output' && String(e['d']).includes('FAKE_GROK_UP'),
+  );
+
+  expect(String(output['d'])).toInclude('--resume fake-grok-1');
+  expect(String(output['d'])).not.toInclude('claude --resume');
+  expect(String(output['d'])).not.toInclude('FAKE_CLAUDE_UP');
+});
+
+test('it marks a grok session done on end-turn Stop', async () => {
+  const ctx = setupDaemonProc();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'stop',
+      sessionId: 'fake-grok-1',
+      reason: 'end_turn',
+    })}\n`,
+  );
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'done');
+});
+
+test('it ignores a grok hook event that names a subagent', async () => {
+  const ctx = setupDaemonProc();
+
+  writeFileSync(
+    join(ctx.home, 'fake-grok-events.jsonl'),
+    `${JSON.stringify({
+      hookEventName: 'stop',
+      sessionId: 'fake-grok-1',
+      reason: 'end_turn',
+      subagentType: 'explore',
+    })}\n`,
+  );
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  const spawned = getRecord(ok, 'session');
+
+  await client.sendRequest('session.attach', {
+    session: getString(spawned, 'id'),
+    cols: 80,
+    rows: 24,
+  });
+
+  await waitForEvent(
+    events,
+    (e) => e.ev === 'session.output' && String(e['d']).includes('FAKE_GROK_HOOKS_DONE'),
+  );
+
+  const list = await client.sendRequest('session.list');
+
+  const [listed] = getRecords(list, 'sessions');
+
+  if (listed === undefined) {
+    throw new Error('no grok session');
+  }
+
+  expect(listed).toMatchObject({ state: 'running', agent: 'grok' });
+});
+
+test('it keeps grok needs_you when idle_prompt follows permission_prompt', async () => {
+  const ctx = setupDaemonProc();
+
+  const client = await ctx.openClient();
+
+  const events: EventMsg[] = [];
+
+  client.onEvent = (e) => {
+    events.push(e);
+  };
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: ctx.home,
+    agent: 'grok',
+    cols: 80,
+    rows: 24,
+  });
+
+  const spawned = getRecord(ok, 'session');
+
+  await waitForEvent(events, (e) => e.ev === 'session.state' && e['state'] === 'needs_you');
+
+  const reporter = Bun.spawn([process.execPath, join(repo, 'src', 'cli.ts'), 'hook-report'], {
+    stdin: new TextEncoder().encode(
+      JSON.stringify({
+        hookEventName: 'notification',
+        sessionId: 'fake-grok-1',
+        notificationType: 'idle_prompt',
+      }),
+    ),
+    env: collectEnv({
+      HOME: ctx.home,
+      ATC_SESSION_ID: getString(spawned, 'id'),
+      ATC_SOCKET: join(ctx.home, 'atc.sock'),
+    }),
+  });
+
+  await reporter.exited;
+
+  await Bun.sleep(100); // the reporter is fire-and-forget; give the daemon time to apply the hook
+
+  const list = await client.sendRequest('session.list');
+
+  const [listed] = getRecords(list, 'sessions');
+
+  if (listed === undefined) {
+    throw new Error('no grok session');
+  }
+
+  expect(listed).toMatchObject({ state: 'needs_you', agent: 'grok' });
+});

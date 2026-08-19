@@ -1,7 +1,9 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'node:fs';
+import { toAgentKind } from './agent-adapter';
+import type { AgentKind } from './agent-adapter';
 import type { HookEvent } from './hooks';
-import { isRecord } from './report';
+import { parseFleetEntry } from './sessions';
 import type { FleetEntry } from './sessions';
 
 /**
@@ -25,7 +27,8 @@ export class StateStore {
         name TEXT NOT NULL,
         cwd TEXT NOT NULL,
         pinned INTEGER NOT NULL DEFAULT 0,
-        last_attached INTEGER
+        last_attached INTEGER,
+        agent TEXT NOT NULL DEFAULT 'claude'
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,10 +42,14 @@ export class StateStore {
         cwd TEXT PRIMARY KEY,
         last_spawn INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS prefs (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
 
-    // Stores created before pinning and attach recency existed lack the
-    // columns; the create above only applies to fresh databases.
+    // Stores created before pinning, attach recency, or agent kind existed
+    // lack the columns; the create above only applies to fresh databases.
     const fleetColumns = new Set(
       this.db
         .query<{ name: string }, []>('PRAGMA table_info(fleet)')
@@ -56,6 +63,10 @@ export class StateStore {
 
     if (!fleetColumns.has('last_attached')) {
       this.db.run('ALTER TABLE fleet ADD COLUMN last_attached INTEGER');
+    }
+
+    if (!fleetColumns.has('agent')) {
+      this.db.run("ALTER TABLE fleet ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'");
     }
 
     if (legacyFleetPath !== undefined) {
@@ -72,9 +83,10 @@ export class StateStore {
           cwd: string;
           pinned: number;
           last_attached: number | null;
+          agent: string | null;
         },
         []
-      >('SELECT claude_id, name, cwd, pinned, last_attached FROM fleet')
+      >('SELECT claude_id, name, cwd, pinned, last_attached, agent FROM fleet')
       .all();
 
     const entries: FleetEntry[] = [];
@@ -84,6 +96,7 @@ export class StateStore {
         claudeId: row.claude_id,
         name: row.name,
         cwd: row.cwd,
+        agent: toAgentKind(row.agent),
         ...(row.pinned === 0 ? {} : { pinned: true }),
         ...(row.last_attached === null ? {} : { lastAttachedAt: row.last_attached }),
       });
@@ -109,13 +122,20 @@ export class StateStore {
       this.db.run('DELETE FROM fleet');
 
       const insert = this.db.query(
-        'INSERT OR REPLACE INTO fleet (claude_id, name, cwd, pinned, last_attached) VALUES (?1, ?2, ?3, ?4, ?5)',
+        'INSERT OR REPLACE INTO fleet (claude_id, name, cwd, pinned, last_attached, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
       );
 
       for (const entry of all) {
         const pinned = entry.pinned === true ? 1 : 0;
 
-        insert.run(entry.claudeId, entry.name, entry.cwd, pinned, entry.lastAttachedAt ?? null);
+        insert.run(
+          entry.claudeId,
+          entry.name,
+          entry.cwd,
+          pinned,
+          entry.lastAttachedAt ?? null,
+          entry.agent,
+        );
       }
     });
 
@@ -124,7 +144,7 @@ export class StateStore {
 
   recordEvent(e: HookEvent): void {
     const rawMessage = e.payload['message'];
-    const rawSessionID = e.payload['session_id'];
+    const rawSessionID = e.payload['session_id'] ?? e.payload['sessionId'];
     const message = typeof rawMessage === 'string' ? rawMessage : null;
     const sessionID = typeof rawSessionID === 'string' ? rawSessionID : null;
 
@@ -151,6 +171,22 @@ export class StateStore {
     return rows.map((row) => row.cwd);
   }
 
+  loadLastUsedAgent(): AgentKind {
+    const row = this.db
+      .query<{ value: string }, []>("SELECT value FROM prefs WHERE key = 'last_used_agent'")
+      .get();
+
+    return toAgentKind(row?.value);
+  }
+
+  writeLastUsedAgent(agent: AgentKind): void {
+    this.db
+      .query(
+        'INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2',
+      )
+      .run('last_used_agent', agent);
+  }
+
   stop(): void {
     this.db.close();
   }
@@ -169,13 +205,15 @@ export class StateStore {
         return;
       }
 
-      const entries = parsed.filter(
-        (entry): entry is FleetEntry =>
-          isRecord(entry) &&
-          typeof entry['name'] === 'string' &&
-          typeof entry['cwd'] === 'string' &&
-          typeof entry['claudeId'] === 'string',
-      );
+      const entries: FleetEntry[] = [];
+
+      for (const entry of parsed) {
+        const parsedEntry = parseFleetEntry(entry);
+
+        if (parsedEntry !== undefined) {
+          entries.push(parsedEntry);
+        }
+      }
 
       this.writeFleet(entries);
     } catch {}

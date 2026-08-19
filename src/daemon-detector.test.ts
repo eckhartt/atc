@@ -11,6 +11,8 @@ import { isRecord } from './report';
 // A hook-less agent: a shell that paints a prompt, waits for input, works
 // visibly, then prompts again. Attention comes only from the screen tier.
 const promptAdapter: AgentAdapter = {
+  kind: 'claude',
+  supportsHeadless: false,
   screenDetector: {
     detectAttention: (screen) => (screen.trimEnd().endsWith('READY>') ? 'needs-input' : 'working'),
   },
@@ -23,6 +25,7 @@ const promptAdapter: AgentAdapter = {
   }),
   normalizeHook: () => ({ kind: 'heartbeat' }),
   loadName: () => Promise.resolve(null),
+  canResume: () => true,
   buildResumeCommand: () => null,
 };
 

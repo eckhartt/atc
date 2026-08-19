@@ -1,9 +1,11 @@
+import { normalizeHookEventName } from './normalize-hook-event';
 import { isRecord, sendReport } from './report';
 
 /**
- * Runs as a Claude Code hook inside wrangled sessions. Reads the hook event
- * from stdin and forwards it to the atc unix socket. Always exits 0 so it
- * never blocks the session it reports on.
+ * Runs as a hook inside wrangled sessions. Reads the hook event from stdin
+ * (Claude snake_case keys or Grok camelCase keys) and forwards a PascalCase
+ * event name to the atc unix socket. Always exits 0 so it never blocks the
+ * session it reports on.
  */
 export async function runHookReport(): Promise<void> {
   const sock = process.env['ATC_SOCKET'];
@@ -22,7 +24,9 @@ export async function runHookReport(): Promise<void> {
       }
     } catch {}
 
-    const line = `${JSON.stringify({ atcId, event: payload['hook_event_name'], payload })}\n`;
+    const rawName = payload['hook_event_name'] ?? payload['hookEventName'];
+    const event = typeof rawName === 'string' ? normalizeHookEventName(rawName) : rawName;
+    const line = `${JSON.stringify({ atcId, event, payload })}\n`;
 
     await sendReport(sock, line, 2000);
   }
