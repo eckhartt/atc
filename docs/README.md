@@ -1,7 +1,7 @@
 <div align="center">
   <h1>atc documentation</h1>
 
-  <p>Architecture and design docs for atc, the terminal control tower for Claude Code sessions.</p>
+  <p>Architecture and design docs for atc, the terminal control tower for Claude Code and Grok Build sessions.</p>
 </div>
 
 ## Architecture

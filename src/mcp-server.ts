@@ -43,13 +43,18 @@ const TOOLS: readonly MCPTool[] = [
   {
     name: 'atc_session_spawn',
     description:
-      'Spawn a new Claude Code session in a directory. Returns the new session descriptor. Give it a prompt to start it working immediately.',
+      'Spawn a new session in a directory. Optional agent is claude or grok; omitted agent is always Claude, never the TUI last-used value. Returns the new session descriptor. Give it a prompt to start it working immediately.',
     inputSchema: {
       type: 'object',
       properties: {
         cwd: { type: 'string', description: 'Absolute path of the working directory' },
         name: { type: 'string', description: 'Session name; defaults to the directory basename' },
         prompt: { type: 'string', description: 'First message for the session' },
+        agent: {
+          type: 'string',
+          enum: ['claude', 'grok'],
+          description: 'Which agent CLI to spawn; defaults to claude',
+        },
       },
       required: ['cwd'],
       additionalProperties: false,
@@ -236,10 +241,17 @@ async function runTool(
       return JSON.stringify(ok['sessions'], null, 2);
     }
     case 'atc_session_spawn': {
+      const rawAgent = args['agent'];
+
+      if (rawAgent !== undefined && rawAgent !== 'claude' && rawAgent !== 'grok') {
+        throw new Error("agent must be 'claude' or 'grok'");
+      }
+
       const ok = await client.sendRequest('session.spawn', {
         cwd: args['cwd'],
         ...(typeof args['name'] === 'string' ? { name: args['name'] } : {}),
         ...(typeof args['prompt'] === 'string' ? { prompt: args['prompt'] } : {}),
+        ...(rawAgent === 'claude' || rawAgent === 'grok' ? { agent: rawAgent } : {}),
         cols: 100,
         rows: 30,
       });

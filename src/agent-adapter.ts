@@ -1,5 +1,15 @@
 import type { HookEvent } from './hooks';
 
+export type AgentKind = 'claude' | 'grok';
+
+/**
+ * Missing, empty, and unknown values become Claude so a fleet written
+ * before the agent column still restores as Claude.
+ */
+export function toAgentKind(raw: unknown): AgentKind {
+  return raw === 'grok' ? 'grok' : 'claude';
+}
+
 export interface SpawnOptions {
   readonly prompt: string;
 
@@ -24,6 +34,10 @@ export interface AdapterEvent {
 
   // Opaque handle the adapter can later pull a session name from.
   nameSource?: string;
+
+  // Claude resume-existence path. Distinct from nameSource: a naming
+  // handle is not a resume gate.
+  transcriptSource?: string;
 }
 
 export interface NameUpdate {
@@ -42,12 +56,20 @@ interface ScreenDetector {
   readonly detectAttention: (screen: string) => AttentionJudgment | null;
 }
 
+export interface ResumeCheck {
+  readonly agentSessionID?: string;
+  readonly transcriptSource?: string;
+}
+
 /**
  * Everything specific to one agent CLI: how to spawn it, how to read its
  * hook payloads, where its session names come from, and how to resume a
  * session outside atc. The session core never sees past this interface.
  */
 export interface AgentAdapter {
+  readonly kind: AgentKind;
+  readonly supportsHeadless: boolean;
+
   // The detector stack's screen tier; null when hooks are authoritative.
   readonly screenDetector: ScreenDetector | null;
   readonly planSpawn: (opts: SpawnOptions) => SpawnPlan;
@@ -56,5 +78,6 @@ export interface AgentAdapter {
     source: string,
     namedBy: 'user' | 'auto' | 'agent',
   ) => Promise<NameUpdate | null>;
+  readonly canResume: (session: ResumeCheck) => boolean;
   readonly buildResumeCommand: (cwd: string, agentSessionID: string | undefined) => string | null;
 }

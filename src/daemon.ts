@@ -1,5 +1,5 @@
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
-import type { AgentAdapter } from './agent-adapter';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import type { AgentAdapter, AgentKind } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
 import { DaemonConnection } from './daemon-connection';
@@ -20,6 +20,10 @@ export interface DaemonOptions {
   // Build string sent in the handshake and in mismatch errors, e.g. "atc/0.1.0".
   readonly build: string;
   readonly adapter: AgentAdapter;
+
+  // Optional per-kind adapters. Lookup never falls back across kinds: a
+  // grok session with no grok adapter is unsupported, not a Claude spawn.
+  readonly adapters?: Partial<Readonly<Record<AgentKind, AgentAdapter>>>;
 
   // SQLite path for daemon state; a fleet.json at legacyFleetPath seeds the
   // fleet table once so upgrading keeps the restorable fleet.
@@ -95,12 +99,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   }
 
   const store = new StateStore(opts.dbPath, opts.legacyFleetPath);
-
-  const mgr =
-    opts.statusPath === undefined
-      ? new SessionManager(opts.adapter, store)
-      : new SessionManager(opts.adapter, store, opts.statusPath);
-
+  const mgr = new SessionManager(opts.adapter, store, opts.statusPath, opts.adapters ?? {});
   const clients = new Set<DaemonConnection>();
 
   const emitEvent = (event: EventMsg) => {
@@ -167,8 +166,15 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const startHeadlessTurn = (sessionID: string, prompt: string): boolean => {
     const runner = opts.headlessRunner;
     const s = mgr.sessions.find((x) => x.id === sessionID);
+    const adapter = s === undefined ? null : mgr.findAdapter(s.agent);
 
-    if (runner === undefined || s === undefined || headlessRuns.has(sessionID)) {
+    if (
+      runner === undefined ||
+      s === undefined ||
+      adapter === null ||
+      !adapter.supportsHeadless ||
+      headlessRuns.has(sessionID)
+    ) {
       return false;
     }
 
@@ -211,11 +217,13 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const detectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const restoreTimers = new Set<ReturnType<typeof setTimeout>>();
+  const pendingLastUsed = new Set<string>();
 
   // The screen tier of the detector stack: once a session's output has
   // quiesced, judge the serialized screen and flip running/needs_you.
   const scheduleDetect = (sessionID: string) => {
-    const detector = opts.adapter.screenDetector;
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+    const detector = s === undefined ? null : (mgr.findAdapter(s.agent)?.screenDetector ?? null);
 
     if (detector === null) {
       return;
@@ -306,7 +314,8 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   };
 
   const applyScreenJudgment = async (sessionID: string) => {
-    const detector = opts.adapter.screenDetector;
+    const s = mgr.sessions.find((x) => x.id === sessionID);
+    const detector = s === undefined ? null : (mgr.findAdapter(s.agent)?.screenDetector ?? null);
     const model = screens.get(sessionID);
 
     if (detector === null || model === undefined) {
@@ -418,6 +427,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
         kind: s.kind,
         alive: s.pty !== null || (s.kind === 'jsonl' && s.state !== 'exited'),
         ...(s.claudeId === undefined ? {} : { claudeId: s.claudeId }),
+        agent: s.agent,
         pinned: s.pinned,
         lastAttachedAt: s.lastAttachedAt,
       }),
@@ -447,6 +457,11 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     // waits on before booting the next one.
     if (e.event === 'SessionStart') {
       bootWaiters.get(e.atcId)?.();
+      const started = mgr.sessions.find((s) => s.id === e.atcId);
+
+      if (started !== undefined && pendingLastUsed.delete(started.id)) {
+        store.writeLastUsedAgent(started.agent);
+      }
     }
 
     mgr.applyHook(e);
@@ -457,9 +472,12 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     collectSessions: () => mgr.collectDescriptors(),
     collectSpawnDirs: () => store.collectSpawnDirs(),
     collectFleet: () => store.loadFleet(),
+    loadLastUsedAgent: () => store.loadLastUsedAgent(),
+    findAdapter: (kind) => mgr.findAdapter(kind),
     spawnSession: (p) => {
-      const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy);
+      const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy, p.agent);
 
+      pendingLastUsed.add(s.id);
       ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
       screens.set(s.id, new ScreenModel(p.cols, p.rows));
       store.recordSpawnDir(p.cwd);
@@ -487,6 +505,18 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       return true;
     },
     ejectSession: (id, prompt) => {
+      const s = mgr.sessions.find((x) => x.id === id);
+
+      if (s === undefined) {
+        return 'missing';
+      }
+
+      const adapter = mgr.findAdapter(s.agent);
+
+      if (adapter === null || !adapter.supportsHeadless) {
+        return 'unsupported_agent';
+      }
+
       if (opts.headlessRunner === undefined) {
         return 'unsupported';
       }
@@ -749,18 +779,23 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   return { stop: stopDaemon };
 }
 
-// A session reporting a transcript path that does not exist on disk yet has
-// nothing to resume — claude exits immediately on such a resume, which
-// reads as the revive silently failing. A session that never reported a
-// path (foreign adapters) passes; the spawn itself will tell the truth.
 function hasResumableTranscript(mgr: SessionManager, id: string): boolean {
   const s = mgr.sessions.find((x) => x.id === id);
 
-  if (s === undefined || s.transcriptSource === undefined) {
-    return true;
+  if (s === undefined) {
+    return false;
   }
 
-  return existsSync(s.transcriptSource);
+  const adapter = mgr.findAdapter(s.agent);
+
+  if (adapter === null) {
+    return false;
+  }
+
+  return adapter.canResume({
+    ...(s.claudeId === undefined ? {} : { agentSessionID: s.claudeId }),
+    ...(s.transcriptSource === undefined ? {} : { transcriptSource: s.transcriptSource }),
+  });
 }
 
 function getDescriptor(mgr: SessionManager, id: string): SessionDescriptor {

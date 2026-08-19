@@ -6,6 +6,8 @@ import { isRecord } from './report';
 export interface Config {
   claudeBin: string;
   claudeArgs: string[];
+  grokBin: string;
+  grokArgs: string[];
   leader: LeaderKey;
 }
 
@@ -17,6 +19,8 @@ interface LeaderKey {
 const DEFAULTS: Config = {
   claudeBin: 'claude',
   claudeArgs: [],
+  grokBin: 'grok',
+  grokArgs: [],
   leader: { code: 0, label: '^Space' },
 };
 
@@ -57,11 +61,17 @@ export function loadConfig(): Config {
       ? parsed['claudeArgs'].filter((a): a is string => typeof a === 'string')
       : DEFAULTS.claudeArgs;
 
+    const grokBin = typeof parsed['grokBin'] === 'string' ? parsed['grokBin'] : DEFAULTS.grokBin;
+
+    const grokArgs = Array.isArray(parsed['grokArgs'])
+      ? parsed['grokArgs'].filter((a): a is string => typeof a === 'string')
+      : DEFAULTS.grokArgs;
+
     const leader =
       (typeof parsed['leader'] === 'string' ? decodeLeader(parsed['leader']) : null) ??
       DEFAULTS.leader;
 
-    return { claudeBin, claudeArgs, leader };
+    return { claudeBin, claudeArgs, grokBin, grokArgs, leader };
   } catch {
     return { ...DEFAULTS };
   }

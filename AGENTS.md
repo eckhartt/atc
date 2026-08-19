@@ -176,6 +176,8 @@ tooling, not app code.
 - Wrangled sessions are instrumented only via the generated `--settings` file (`writeHookSettings`):
   hooks (`SessionStart`, `Notification`, `Stop`, `UserPromptSubmit`, `SessionEnd`) and a chained
   statusline. Never touch the user's own Claude settings.
+- Grok attention is a user-installed hook file at `$GROK_HOME/hooks/atc-reporter.json`. atc prints
+  that file (`atc grok-hooks`) and never writes into the user's Grok config.
 - Hook and statusline reporters run inside the wrangled session and must always exit 0 — a broken
   reporter must never break the session it reports on.
 - Claude is the naming authority for sessions: `/rename` custom-titles beat user-typed names beat

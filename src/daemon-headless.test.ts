@@ -6,14 +6,18 @@ import type { AgentAdapter } from './agent-adapter';
 import { startDaemon } from './daemon';
 import type { HeadlessRunner } from './daemon';
 import { DaemonClient } from './daemon-client';
+import { GrokAdapter } from './grok-adapter';
 import type { EventMsg } from './protocol';
 import { isRecord } from './report';
 
 const sleepAdapter: AgentAdapter = {
+  kind: 'claude',
+  supportsHeadless: true,
   screenDetector: null,
   planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
   normalizeHook: () => ({ kind: 'heartbeat' }),
   loadName: () => Promise.resolve(null),
+  canResume: () => true,
   buildResumeCommand: () => null,
 };
 
@@ -282,4 +286,85 @@ test('it reports eject as unsupported without a headless runner', async () => {
   expect(ctx.client.sendRequest('session.eject', { session: id })).rejects.toMatchObject({
     code: 'unsupported',
   });
+});
+
+test('it refuses to eject a grok session and does not start a headless runner', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atc-headless-'));
+  const prevHome = process.env['GROK_HOME'];
+  const runs: HeadlessContext['runs'] = [];
+
+  process.env['GROK_HOME'] = join(dir, 'grok-home');
+
+  const grok = new GrokAdapter({
+    claudeBin: 'claude',
+    claudeArgs: [],
+    grokBin: 'bash',
+    grokArgs: ['-c', 'sleep 30'],
+    leader: { code: 0, label: '^Space' },
+  });
+
+  const startFakeRun: HeadlessRunner = (opts, hooks) => {
+    runs.push({
+      opts: { ...opts },
+      finish() {},
+    });
+
+    hooks.onOutput('HEADLESS LINE\r\n');
+
+    return { stop() {} };
+  };
+
+  const daemon = startDaemon({
+    socketPath: join(dir, 'daemon.sock'),
+    reporterSocketPath: join(dir, 'reporter.sock'),
+    build: 'atc/test-build',
+    adapter: sleepAdapter,
+    adapters: { grok },
+    dbPath: join(dir, 'state.db'),
+    statusPath: join(dir, 'status.json'),
+    ejectSettleMs: 30,
+    headlessRunner: startFakeRun,
+  });
+
+  const client = await DaemonClient.open(join(dir, 'daemon.sock'));
+
+  onTestFinished(() => {
+    client.stop();
+    daemon.stop();
+
+    if (prevHome === undefined) {
+      delete process.env['GROK_HOME'];
+    } else {
+      process.env['GROK_HOME'] = prevHome;
+    }
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await client.sendHello('atc/test');
+
+  const ok = await client.sendRequest('session.spawn', {
+    cwd: '/tmp',
+    name: 'grok-handoff',
+    agent: 'grok',
+    resume: 'grok-sess-1',
+    cols: 80,
+    rows: 24,
+  });
+
+  const spawned = ok['session'];
+
+  if (!isRecord(spawned) || typeof spawned['id'] !== 'string') {
+    throw new Error('no session in spawn answer');
+  }
+
+  expect(client.sendRequest('session.eject', { session: spawned['id'] })).rejects.toMatchObject({
+    code: 'unsupported',
+    message: 'grok sessions have no headless handoff',
+  });
+
+  // Eject settle is 30ms; wait it out so a mistaken runner start would have landed.
+  await Bun.sleep(50);
+
+  expect(runs).toHaveLength(0);
 });

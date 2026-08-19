@@ -10,7 +10,7 @@ The target process model: a per-user daemon owns the sessions; thin clients atta
 ```text
 atc (client TUI) ──┐
 atc (ssh client) ──┼── NDJSON protocol ──> atcd
-                   │                        ├── PTY per session ──> claude
+                   │                        ├── PTY per session ──> claude or grok
                    │                        ├── screen model per session (@xterm/headless)
                    │                        ├── hook/statusline listener (separate socket)
                    │                        └── SQLite state
@@ -54,14 +54,21 @@ has to.
   attention flag, identity — plus a surface that produces its output: `PtySurface` (terminal bytes,
   what exists today) or later `SdkSurface` (structured JSON messages from an Agent SDK session, no
   terminal at all). Session `kind` is carried in every descriptor and attach.
-- Everything Claude-specific lives in a `ClaudeAdapter`: spawn arguments, `--settings`
-  instrumentation, resume semantics, transcript name-pulling, statusline chaining. The core never
-  knows about Claude. A future agent CLI becomes an adapter, not a refactor.
-- Attention detection is a per-adapter detector stack: hooks where they exist (Claude), screen
-  heuristics as the universal fallback, API signals for SDK surfaces.
+- Everything agent-specific lives in an adapter: `ClaudeAdapter` (spawn arguments, `--settings`
+  instrumentation, resume semantics, transcript name-pulling, statusline chaining) and `GrokAdapter`
+  (spawn arguments, resume semantics, `summary.json` name-pulling). The core never knows about a
+  particular CLI. Lookup never returns a different kind than the one asked for. Config keys
+  `grokBin` and `grokArgs` select the Grok binary; atc always appends `--no-leader`.
+- Attention detection is a per-adapter detector stack: hooks where they exist (Claude and Grok),
+  screen heuristics as the universal fallback, API signals for SDK surfaces. Grok has no headless
+  handoff: overlay `H` is hidden and ignored on a Grok row, and `session.eject` is `unsupported`.
+  Yank of a Grok session is `cd '…' && grok --resume <id>`, or `cd '…' && grok` when no id is
+  captured.
 
 ## State
 
-SQLite (`bun:sqlite`) in the daemon replaces the JSON state files: sessions, fleet, event log, spawn
-history in one store with no cross-process write races. `status.json` alone survives, because
-statusline reporters in wrangled sessions read it without speaking the protocol.
+SQLite (`bun:sqlite`) in the daemon holds the restorable fleet, event log, spawn history, and
+last-used agent (written on a deliberate-spawn SessionStart, advertised on `daemon.hello`) in one
+store with no cross-process write races. `status.json` alone stays a plain file, because statusline
+reporters in wrangled sessions read it without speaking the protocol. Grok attention is a
+self-installed hook file at `$GROK_HOME/hooks/atc-reporter.json`; `atc grok-hooks` prints it.

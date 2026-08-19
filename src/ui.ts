@@ -1,4 +1,6 @@
+import type { AgentKind } from './agent-adapter';
 import { formatDir } from './dirs';
+import { formatOverlayAgentMark } from './format-overlay-agent-mark';
 import { RESET_INPUT_MODES } from './reset-input-modes';
 import { PINNED_GROUP_KEY } from './sessions';
 import type { SessionState } from './sessions';
@@ -161,6 +163,7 @@ export interface OverlaySessionView extends SessionView {
   readonly alive: boolean;
   readonly kind: 'pty' | 'jsonl';
   readonly resumable: boolean;
+  readonly agent: AgentKind;
   readonly pinned: boolean;
   readonly repoRoot: string;
 }
@@ -202,14 +205,18 @@ export function drawOverlay(view: OverlayView) {
     const name = truncate(s.name, 16).padEnd(16);
     const state = STATE_LABEL[s.state].padEnd(9);
     const dir = view.grouped ? '' : ` ${truncate(formatDir(s.cwd), 18).padEnd(18)}`;
-    const msgWidth = Math.max(4, width - 4 - 3 - 17 - 10 - (view.grouped ? 0 : 19));
+    const msgWidth = Math.max(4, width - 4 - 4 - 17 - 10 - (view.grouped ? 0 : 19));
     const msg = truncate(s.lastMsg, msgWidth).padEnd(msgWidth);
     const unread = s.unread ? `${ESC}[1;33m!${ESC}[0m` : ' ';
     const pin = s.pinned ? `${ESC}[93m⋆${ESC}[0m` : ' ';
+    const mark = formatOverlayAgentMark(s.agent);
+    const styledMark = mark === 'g' ? `${ESC}[90m${mark}${ESC}[0m` : mark;
     const body = `${name} ${state}${dir} ${msg}`;
     const styledBody = sel ? `${ESC}[7m${body}${ESC}[0m` : body;
 
-    rowsList.push(boxRow(width, `${GLYPH[s.state]}${unread}${pin}${styledBody}`, 3 + body.length));
+    rowsList.push(
+      boxRow(width, `${GLYPH[s.state]}${unread}${pin}${styledMark}${styledBody}`, 4 + body.length),
+    );
   }
 
   rowsList.push(boxDivider(width));
@@ -245,8 +252,8 @@ export function drawOverlay(view: OverlayView) {
 const GLOBAL_HINT = 'g groups · n new · ? keys';
 
 // Only the actions valid for the selected row appear; the full reference
-// lives behind ?.
-function buildOverlayHint(s: OverlaySessionView | undefined): string {
+// lives behind ?. Grok has no headless handoff, so H is omitted there.
+export function buildOverlayHint(s: OverlaySessionView | undefined): string {
   if (s === undefined) {
     return GLOBAL_HINT;
   }
@@ -262,7 +269,11 @@ function buildOverlayHint(s: OverlaySessionView | undefined): string {
       actions.push('a ack');
     }
 
-    actions.push('H headless', 'y yank', 'Y eject', 'K kill');
+    if (s.agent !== 'grok') {
+      actions.push('H headless');
+    }
+
+    actions.push('y yank', 'Y eject', 'K kill');
   } else {
     if (s.resumable) {
       actions.push('P revive', 'y yank');
@@ -285,13 +296,14 @@ export function drawHelp() {
     '⏎  attach the selected session',
     '⇥  attach the most urgent needs-you, else latest done',
     'a  ack its notification without attaching',
-    'H  eject to a headless run',
+    'H  eject to a headless run (Claude only)',
     'P  revive a dead or headless session',
     'y  yank the resume command to the clipboard',
     'Y  yank the resume command, then kill here',
     'K  kill (K again on a dead session forgets it)',
     'p  pin or unpin — pinned sessions stay on top',
     'g  toggle grouping by repository',
+    '    Grok rows show a dim g after the pin mark',
     'n  new session',
     'r  adopt an external session',
     '/  filter · ↑↓/jk move · q quit',
@@ -359,10 +371,10 @@ export function drawHome(fleetCount = 0, leaderLabel = '^Space') {
   out(ansi.clear + ansi.hideCursor);
 
   const msgs = [
-    'atc — control tower for claude sessions',
+    'atc — control tower for Claude and Grok sessions',
     '',
     'n       spawn a session',
-    'r       adopt an existing session (claude --resume)',
+    'r       adopt an existing session',
     ...(fleetCount > 0 ? [`R       restore last fleet (${fleetCount} sessions)`] : []),
     `${leaderLabel.padEnd(7)} session list`,
     'q       quit',

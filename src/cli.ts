@@ -45,6 +45,7 @@ const main = defineCommand({
           const daemon = await import('./daemon');
           const config = await import('./config');
           const claude = await import('./claude-adapter');
+          const grok = await import('./grok-adapter');
           const headless = await import('./start-headless-run');
 
           // Test harnesses shrink the outbound queue to force overflow
@@ -60,12 +61,16 @@ const main = defineCommand({
           const restoreBootTimeoutMs =
             Number.isFinite(capOverride) && capOverride >= 0 ? capOverride : 15_000;
 
+          const claudeAdapter = new claude.ClaudeAdapter(cfg);
+          const grokAdapter = new grok.GrokAdapter(cfg);
+
           const handle = daemon.startDaemon({
             headlessRunner: (runOpts, hooks) => headless.startHeadlessRun(runOpts, hooks),
             socketPath: config.daemonSocketPath,
             reporterSocketPath: config.socketPath,
             build: getBuild(),
-            adapter: new claude.ClaudeAdapter(cfg),
+            adapter: claudeAdapter,
+            adapters: { claude: claudeAdapter, grok: grokAdapter },
             dbPath: config.dbFile,
             legacyFleetPath: config.legacyFleetFile,
             pidPath: config.daemonPidFile,
@@ -78,6 +83,18 @@ const main = defineCommand({
             handle.stop();
             process.exit(0);
           });
+        },
+      }),
+    'grok-hooks': () =>
+      defineCommand({
+        meta: {
+          name: 'grok-hooks',
+          description: 'Print the Grok hook file to install at $GROK_HOME/hooks/atc-reporter.json',
+        },
+        async run() {
+          const hook = await import('./print-grok-hook-file');
+
+          hook.printGrokHookFile();
         },
       }),
     'hook-report': () =>

@@ -23,13 +23,13 @@ test('it round-trips the fleet', () => {
   });
 
   store.writeFleet([
-    { name: 'auth-bug', cwd: '/x', claudeId: 'c1' },
-    { name: 'refactor', cwd: '/y', claudeId: 'c2' },
+    { name: 'auth-bug', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+    { name: 'refactor', cwd: '/y', claudeId: 'c2', agent: 'claude' },
   ]);
 
   expect(store.loadFleet()).toStrictEqual([
-    { name: 'auth-bug', cwd: '/x', claudeId: 'c1' },
-    { name: 'refactor', cwd: '/y', claudeId: 'c2' },
+    { name: 'auth-bug', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+    { name: 'refactor', cwd: '/y', claudeId: 'c2', agent: 'claude' },
   ]);
 });
 
@@ -40,10 +40,12 @@ test('it replaces the fleet wholesale on write', () => {
     store.stop();
   });
 
-  store.writeFleet([{ name: 'one', cwd: '/x', claudeId: 'c1' }]);
-  store.writeFleet([{ name: 'two', cwd: '/y', claudeId: 'c2' }]);
+  store.writeFleet([{ name: 'one', cwd: '/x', claudeId: 'c1', agent: 'claude' }]);
+  store.writeFleet([{ name: 'two', cwd: '/y', claudeId: 'c2', agent: 'claude' }]);
 
-  expect(store.loadFleet()).toStrictEqual([{ name: 'two', cwd: '/y', claudeId: 'c2' }]);
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'two', cwd: '/y', claudeId: 'c2', agent: 'claude' },
+  ]);
 });
 
 test('it seeds the fleet from a legacy fleet.json once', () => {
@@ -58,7 +60,9 @@ test('it seeds the fleet from a legacy fleet.json once', () => {
     store.stop();
   });
 
-  expect(store.loadFleet()).toStrictEqual([{ name: 'seeded', cwd: '/z', claudeId: 'c9' }]);
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'seeded', cwd: '/z', claudeId: 'c9', agent: 'claude' },
+  ]);
 });
 
 test('it never overwrites an existing fleet table from the legacy file', () => {
@@ -70,7 +74,7 @@ test('it never overwrites an existing fleet table from the legacy file', () => {
 
   const first = new StateStore(dbPath, legacy);
 
-  first.writeFleet([{ name: 'fresh', cwd: '/new', claudeId: 'c1' }]);
+  first.writeFleet([{ name: 'fresh', cwd: '/new', claudeId: 'c1', agent: 'claude' }]);
   first.stop();
 
   const second = new StateStore(dbPath, legacy);
@@ -79,7 +83,9 @@ test('it never overwrites an existing fleet table from the legacy file', () => {
     second.stop();
   });
 
-  expect(second.loadFleet()).toStrictEqual([{ name: 'fresh', cwd: '/new', claudeId: 'c1' }]);
+  expect(second.loadFleet()).toStrictEqual([
+    { name: 'fresh', cwd: '/new', claudeId: 'c1', agent: 'claude' },
+  ]);
 });
 
 test('it records hook events into the trail', () => {
@@ -113,6 +119,55 @@ test('it records hook events into the trail', () => {
   expect(rows).toStrictEqual([
     { atc_id: 's1', event: 'Notification', message: 'needs permission', session_id: 'c1' },
   ]);
+});
+
+test('it records a Grok session id from the camelCase payload key', () => {
+  const dir = setupDir();
+  const dbPath = join(dir, 'state.db');
+
+  const store = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.recordEvent({
+    atcId: 's1',
+    event: 'SessionStart',
+    payload: { hookEventName: 'session_start', sessionId: 'g1' },
+  });
+
+  const db = new Database(dbPath, { readonly: true });
+
+  onTestFinished(() => {
+    db.close();
+  });
+
+  const rows = db
+    .query<{ atc_id: string; event: string; message: string | null; session_id: string }, []>(
+      'SELECT atc_id, event, message, session_id FROM events',
+    )
+    .all();
+
+  expect(rows).toStrictEqual([
+    { atc_id: 's1', event: 'SessionStart', message: null, session_id: 'g1' },
+  ]);
+});
+
+test('it reports recency for a Grok session id', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.recordEvent({
+    atcId: 's1',
+    event: 'SessionStart',
+    payload: { hookEventName: 'session_start', sessionId: 'g1' },
+  });
+
+  expect([...store.collectFleetRecency().keys()]).toStrictEqual(['g1']);
 });
 
 test('it reports the latest event timestamp per agent session', () => {
@@ -166,4 +221,81 @@ test('it lists spawn directories most recent first without duplicates', async ()
   store.recordSpawnDir('/a');
 
   expect(store.collectSpawnDirs()).toStrictEqual(['/a', '/b']);
+});
+
+test('it round-trips a grok fleet row', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  store.writeFleet([{ name: 'mixed', cwd: '/g', claudeId: 'g1', agent: 'grok' }]);
+
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'mixed', cwd: '/g', claudeId: 'g1', agent: 'grok' },
+  ]);
+});
+
+test('it defaults last-used agent to claude and round-trips a write', () => {
+  const store = new StateStore(join(setupDir(), 'state.db'));
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  expect(store.loadLastUsedAgent()).toBe('claude');
+
+  store.writeLastUsedAgent('grok');
+
+  expect(store.loadLastUsedAgent()).toBe('grok');
+
+  store.writeLastUsedAgent('claude');
+
+  expect(store.loadLastUsedAgent()).toBe('claude');
+});
+
+test('it loads last-used agent from a reopened store', () => {
+  const dbPath = join(setupDir(), 'state.db');
+
+  const first = new StateStore(dbPath);
+
+  first.writeLastUsedAgent('grok');
+  first.stop();
+
+  const second = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    second.stop();
+  });
+
+  expect(second.loadLastUsedAgent()).toBe('grok');
+});
+
+test('it loads a fleet written before the agent column as claude', () => {
+  const dbPath = join(setupDir(), 'state.db');
+
+  const db = new Database(dbPath);
+
+  db.run(`
+    CREATE TABLE fleet (
+      claude_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      grp TEXT
+    );
+  `);
+
+  db.run("INSERT INTO fleet (claude_id, name, cwd, grp) VALUES ('c1', 'old', '/x', NULL)");
+  db.close();
+
+  const store = new StateStore(dbPath);
+
+  onTestFinished(() => {
+    store.stop();
+  });
+
+  expect(store.loadFleet()).toStrictEqual([
+    { name: 'old', cwd: '/x', claudeId: 'c1', agent: 'claude' },
+  ]);
 });
