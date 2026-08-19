@@ -1,9 +1,9 @@
 import { expect, onTestFinished, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Config } from './config';
-import { GrokAdapter, tryWriteGrokHookFile } from './grok-adapter';
+import { GrokAdapter } from './grok-adapter';
 import type { HookEvent } from './hooks';
 
 function setupGrokHome(): string {
@@ -40,8 +40,6 @@ function buildGrokHook(event: string, payload: Readonly<Record<string, unknown>>
 }
 
 test('it plans a new spawn without resume or -p and appends --no-leader', () => {
-  setupGrokHome();
-
   const plan = new GrokAdapter(buildGrokConfig()).planSpawn({
     prompt: 'fix the bug',
     resume: false,
@@ -57,16 +55,12 @@ test('it plans a new spawn without resume or -p and appends --no-leader', () => 
 });
 
 test('it plans adopt without --resume', () => {
-  setupGrokHome();
-
   const plan = new GrokAdapter(buildGrokConfig()).planSpawn({ prompt: '', resume: true });
 
   expect(plan.args).toStrictEqual(['--no-leader']);
 });
 
 test('it plans restore with --resume after --no-leader', () => {
-  setupGrokHome();
-
   const plan = new GrokAdapter(buildGrokConfig()).planSpawn({
     prompt: '',
     resume: '01a0148d-f30c-7091-9bbf-548c4a7ed49e',
@@ -255,38 +249,14 @@ test('it loads an auto title only when the session was not user-named', async ()
   expect(user).toBeNull();
 });
 
-test('it writes the hook file under GROK_HOME and not always ~/.grok', () => {
-  const home = setupGrokHome();
-
-  tryWriteGrokHookFile();
-
-  const written = readFileSync(join(home, 'hooks', 'atc-reporter.json'), 'utf8');
-
-  expect(written).toInclude('SessionStart');
-  expect(written).toInclude('StopCancelled');
-  expect(written).toInclude('hook-report');
-});
-
-test('it does not throw from construct or planSpawn when the hook write fails', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'atc-grok-fail-'));
-  const blocked = join(dir, 'not-a-dir');
-  const prev = process.env['GROK_HOME'];
-
-  writeFileSync(blocked, 'nope');
-
-  process.env['GROK_HOME'] = blocked;
-
-  onTestFinished(() => {
-    if (prev === undefined) {
-      delete process.env['GROK_HOME'];
-    } else {
-      process.env['GROK_HOME'] = prev;
-    }
-
-    rmSync(dir, { recursive: true, force: true });
-  });
-
+test('it resumes when a session id was captured and not from a summary path', () => {
   const adapter = new GrokAdapter(buildGrokConfig());
 
-  expect(() => adapter.planSpawn({ prompt: '', resume: false })).not.toThrow();
+  expect(adapter.canResume({ agentSessionID: 'g1' })).toBe(true);
+
+  expect(
+    adapter.canResume({ agentSessionID: 'g1', transcriptSource: '/missing/summary.json' }),
+  ).toBe(true);
+
+  expect(adapter.canResume({})).toBe(false);
 });

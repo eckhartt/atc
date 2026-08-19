@@ -1,14 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type {
   AdapterEvent,
   AgentAdapter,
   NameUpdate,
+  ResumeCheck,
   SpawnOptions,
   SpawnPlan,
 } from './agent-adapter';
-import { buildCLICommand } from './build-cli-command';
 import type { Config } from './config';
 import type { HookEvent } from './hooks';
 import { normalizeHookEventName } from './normalize-hook-event';
@@ -20,8 +20,8 @@ interface GrokSessionHookState {
 }
 
 /**
- * The Grok Build adapter: spawn arguments, dedicated hook-file
- * instrumentation, resume semantics, and summary.json name-pulling.
+ * The Grok Build adapter: spawn arguments, hook payload mapping,
+ * resume semantics, and summary.json name-pulling.
  */
 export class GrokAdapter implements AgentAdapter {
   readonly kind = 'grok';
@@ -40,8 +40,6 @@ export class GrokAdapter implements AgentAdapter {
   }
 
   planSpawn(opts: SpawnOptions): SpawnPlan {
-    tryWriteGrokHookFile();
-
     return {
       bin: this.config.grokBin,
       args: [
@@ -177,6 +175,10 @@ export class GrokAdapter implements AgentAdapter {
     return Promise.resolve(null);
   }
 
+  canResume(session: ResumeCheck): boolean {
+    return session.agentSessionID !== undefined;
+  }
+
   // Shell command that re-opens this session outside atc (or anywhere).
   buildResumeCommand(cwd: string, agentSessionID: string | undefined): string | null {
     const resume = agentSessionID === undefined ? 'grok' : `grok --resume ${agentSessionID}`;
@@ -203,43 +205,6 @@ export class GrokAdapter implements AgentAdapter {
 
     return event;
   }
-}
-
-/**
- * Best-effort write of the dedicated Grok hook file. A failure must not
- * prevent the daemon from serving Claude; planSpawn retries.
- */
-export function tryWriteGrokHookFile(): void {
-  try {
-    writeGrokHookFile();
-  } catch {}
-}
-
-function writeGrokHookFile(): void {
-  const cmd = buildCLICommand('hook-report');
-  const entry = [{ hooks: [{ type: 'command', command: cmd, timeout: 5 }] }];
-  const dir = join(resolveGrokHome(), 'hooks');
-
-  mkdirSync(dir, { recursive: true });
-
-  writeFileSync(
-    join(dir, 'atc-reporter.json'),
-    `${JSON.stringify(
-      {
-        hooks: {
-          SessionStart: entry,
-          SessionEnd: entry,
-          UserPromptSubmit: entry,
-          Stop: entry,
-          StopFailure: entry,
-          StopCancelled: entry,
-          Notification: entry,
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
 }
 
 function resolveGrokHome(): string {

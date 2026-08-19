@@ -38,27 +38,27 @@ fine nested inside zellij/tmux (give the pane locked mode so Ctrl-Space reaches 
 
 ## Keys
 
-| Key             | Where          | Action                                                                                                                                                       |
-| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| leader          | anywhere       | toggle session overlay — `Ctrl-Space` by default, configurable (see Config)                                                                                  |
-| `n`             | home/overlay   | spawn: pick agent → dir (zoxide + history, fuzzy) → name → optional first prompt. Fresh clients default to Claude; last-used is the last SessionStart agent. |
-| `r`             | home/overlay   | adopt: pick agent → dir → name. Claude opens `claude --resume`. Grok opens plain `grok`.                                                                     |
-| `R`             | home           | restore last fleet after a daemon death — each session with its matching CLI                                                                                 |
-| `j`/`k`/`↑`/`↓` | overlay/picker | move                                                                                                                                                         |
-| `Enter`         | overlay        | attach (auto-acks)                                                                                                                                           |
-| `Tab`           | overlay        | attach the most urgent needs-you session, else the latest turn-done one                                                                                      |
-| `/`             | overlay        | fuzzy filter by name/dir (chars in order), `⏎` attach top match, `esc` clear                                                                                 |
-| `a`             | overlay        | ack notification without attaching                                                                                                                           |
-| `p`             | overlay        | pin or unpin the selected session — pinned sessions stay at the top of the list                                                                              |
-| `g`             | overlay        | toggle the grouped view: sessions cluster under repository headers                                                                                           |
-| `H`             | overlay        | eject to headless (Claude only). Hidden and ignored on a Grok row.                                                                                           |
-| `P`             | overlay        | revive: a fresh terminal resumes a headless or killed session in place                                                                                       |
-| `y`             | overlay        | yank the resume command (`claude --resume <id>` or `grok --resume <id>`)                                                                                     |
-| `Y`             | overlay        | eject: yank the resume command, then kill the session here                                                                                                   |
-| `K`             | overlay        | kill selected (confirm with `y`) — the entry stays revivable with `P`; a second `K` forgets it                                                               |
-| `?`             | overlay        | full key reference — the hint row only shows actions valid for the selected session                                                                          |
-| `u`             | overlay        | restart an outdated daemon and restore the fleet — offered only while `⟳ update ready` shows                                                                 |
-| `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                                                                                        |
+| Key             | Where          | Action                                                                                                                                                                  |
+| --------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| leader          | anywhere       | toggle session overlay — `Ctrl-Space` by default, configurable (see Config)                                                                                             |
+| `n`             | home/overlay   | spawn: pick agent → dir (zoxide + history, fuzzy) → name → optional first prompt. Fresh clients default to Claude; last-used is the last deliberate-spawn SessionStart. |
+| `r`             | home/overlay   | adopt: pick agent → dir → name. Claude opens `claude --resume`. Grok opens plain `grok`.                                                                                |
+| `R`             | home           | restore last fleet after a daemon death — each session with its matching CLI                                                                                            |
+| `j`/`k`/`↑`/`↓` | overlay/picker | move                                                                                                                                                                    |
+| `Enter`         | overlay        | attach (auto-acks)                                                                                                                                                      |
+| `Tab`           | overlay        | attach the most urgent needs-you session, else the latest turn-done one                                                                                                 |
+| `/`             | overlay        | fuzzy filter by name/dir (chars in order), `⏎` attach top match, `esc` clear                                                                                            |
+| `a`             | overlay        | ack notification without attaching                                                                                                                                      |
+| `p`             | overlay        | pin or unpin the selected session — pinned sessions stay at the top of the list                                                                                         |
+| `g`             | overlay        | toggle the grouped view: sessions cluster under repository headers                                                                                                      |
+| `H`             | overlay        | eject to headless (Claude only). Hidden and ignored on a Grok row.                                                                                                      |
+| `P`             | overlay        | revive: a fresh terminal resumes a headless or killed session in place                                                                                                  |
+| `y`             | overlay        | yank the resume command (`claude --resume <id>` or `grok --resume <id>`)                                                                                                |
+| `Y`             | overlay        | eject: yank the resume command, then kill the session here                                                                                                              |
+| `K`             | overlay        | kill selected (confirm with `y`) — the entry stays revivable with `P`; a second `K` forgets it                                                                          |
+| `?`             | overlay        | full key reference — the hint row only shows actions valid for the selected session                                                                                     |
+| `u`             | overlay        | restart an outdated daemon and restore the fleet — offered only while `⟳ update ready` shows                                                                            |
+| `q`             | home/overlay   | quit the client — sessions keep running in the daemon                                                                                                                   |
 
 The overlay orders sessions by pinned first, then attention state, then most recently attached, so
 the session you want is nearly always near the top. The grouped view (`g`) keeps that order but
@@ -83,9 +83,45 @@ Spawned Claude sessions get a `--settings` file injecting `Notification`, `Stop`
 `UserPromptSubmit`, and `SessionEnd` hooks that report to a unix socket
 (`$XDG_RUNTIME_DIR/atc.sock`). Your global Claude settings are untouched; sessions you start outside
 atc are unaffected. Grok attention comes from a dedicated hook file at
-`$GROK_HOME/hooks/atc-reporter.json` (`~/.grok` when `GROK_HOME` is unset), written fail-open on
-daemon boot and again on Grok spawn. States: red `●` needs you, cyan `◐` running, green `✓` turn
-done, gray `✗` exited. The status bar turns red and names the most urgent session.
+`$GROK_HOME/hooks/atc-reporter.json` (`~/.grok` when `GROK_HOME` is unset). atc never writes that
+path. Install it yourself:
+
+```sh
+mkdir -p ~/.grok/hooks
+atc grok-hooks > ~/.grok/hooks/atc-reporter.json
+```
+
+`atc grok-hooks` prints this file, with the `hook-report` command resolved for this install:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }],
+    "StopFailure": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ],
+    "StopCancelled": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "atc hook-report", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+A missing file is a Grok PTY without hook-driven attention. States: red `●` needs you, cyan `◐`
+running, green `✓` turn done, gray `✗` exited. The status bar turns red and names the most urgent
+session.
 
 ## Config
 

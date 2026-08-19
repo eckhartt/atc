@@ -17,6 +17,7 @@ const sleepAdapter: AgentAdapter = {
   planSpawn: () => ({ bin: 'sleep', args: ['30'] }),
   normalizeHook: () => ({ kind: 'heartbeat' }),
   loadName: () => Promise.resolve(null),
+  canResume: () => true,
   buildResumeCommand: () => null,
 };
 

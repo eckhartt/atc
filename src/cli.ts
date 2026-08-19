@@ -64,8 +64,6 @@ const main = defineCommand({
           const claudeAdapter = new claude.ClaudeAdapter(cfg);
           const grokAdapter = new grok.GrokAdapter(cfg);
 
-          grok.tryWriteGrokHookFile();
-
           const handle = daemon.startDaemon({
             headlessRunner: (runOpts, hooks) => headless.startHeadlessRun(runOpts, hooks),
             socketPath: config.daemonSocketPath,
@@ -85,6 +83,18 @@ const main = defineCommand({
             handle.stop();
             process.exit(0);
           });
+        },
+      }),
+    'grok-hooks': () =>
+      defineCommand({
+        meta: {
+          name: 'grok-hooks',
+          description: 'Print the Grok hook file to install at $GROK_HOME/hooks/atc-reporter.json',
+        },
+        async run() {
+          const hook = await import('./print-grok-hook-file');
+
+          hook.printGrokHookFile();
         },
       }),
     'hook-report': () =>

@@ -56,10 +56,9 @@ has to.
   terminal at all). Session `kind` is carried in every descriptor and attach.
 - Everything agent-specific lives in an adapter: `ClaudeAdapter` (spawn arguments, `--settings`
   instrumentation, resume semantics, transcript name-pulling, statusline chaining) and `GrokAdapter`
-  (spawn arguments, `$GROK_HOME/hooks/atc-reporter.json`, resume semantics, `summary.json`
-  name-pulling). The core never knows about a particular CLI. Lookup never returns a different kind
-  than the one asked for. Config keys `grokBin` and `grokArgs` select the Grok binary; atc always
-  appends `--no-leader`.
+  (spawn arguments, resume semantics, `summary.json` name-pulling). The core never knows about a
+  particular CLI. Lookup never returns a different kind than the one asked for. Config keys
+  `grokBin` and `grokArgs` select the Grok binary; atc always appends `--no-leader`.
 - Attention detection is a per-adapter detector stack: hooks where they exist (Claude and Grok),
   screen heuristics as the universal fallback, API signals for SDK surfaces. Grok has no headless
   handoff: overlay `H` is hidden and ignored on a Grok row, and `session.eject` is `unsupported`.
@@ -69,7 +68,7 @@ has to.
 ## State
 
 SQLite (`bun:sqlite`) in the daemon holds the restorable fleet, event log, spawn history, and
-last-used agent (written on SessionStart, advertised on `daemon.hello`) in one store with no
-cross-process write races. `status.json` alone stays a plain file, because statusline reporters in
-wrangled sessions read it without speaking the protocol. The Grok hook file is written fail-open
-under `$GROK_HOME/hooks/atc-reporter.json` on boot and again on Grok spawn.
+last-used agent (written on a deliberate-spawn SessionStart, advertised on `daemon.hello`) in one
+store with no cross-process write races. `status.json` alone stays a plain file, because statusline
+reporters in wrangled sessions read it without speaking the protocol. Grok attention is a
+self-installed hook file at `$GROK_HOME/hooks/atc-reporter.json`; `atc grok-hooks` prints it.

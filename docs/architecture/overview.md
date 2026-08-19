@@ -4,7 +4,8 @@ atc multiplexes Claude Code and Grok Build sessions without a tiling layout engi
 session owns the whole terminal, and everything else is reached through a keyboard-driven overlay.
 The design bet is that the pain of many-session work is attention routing, not window management.
 `n` and `r` open an agent picker first; last-used comes from `daemon.hello` and is written on
-SessionStart. MCP spawn ignores last-used and defaults to Claude.
+SessionStart of a deliberate spawn. A fleet restore does not stamp it. MCP spawn ignores last-used
+and defaults to Claude.
 
 ## Process model
 
@@ -44,21 +45,20 @@ Claude sessions are instrumented via a generated settings file passed as `claude
   lines as fallback) — atc is not the naming authority.
 
 Grok sessions use a dedicated hook file at `$GROK_HOME/hooks/atc-reporter.json` (`~/.grok` when
-`GROK_HOME` is unset). The daemon writes it fail-open on boot and again on Grok spawn: a write
-failure never prevents Claude from serving. The same reporter forwards Grok camelCase envelopes.
-Config keys `grokBin` and `grokArgs` select the binary; atc always appends `--no-leader`. Grok names
-come from `summary.json`. Yank of a Grok session pastes `cd '…' && grok --resume <id>`, or
-`cd '…' && grok` when no id is captured. Headless eject (`H`) is Claude-only; a Grok row hides and
-ignores it.
+`GROK_HOME` is unset). atc never writes that path; `atc grok-hooks` prints the file to install. The
+same reporter forwards Grok camelCase envelopes. Config keys `grokBin` and `grokArgs` select the
+binary; atc always appends `--no-leader`. Grok names come from `summary.json`. Yank of a Grok
+session pastes `cd '…' && grok --resume <id>`, or `cd '…' && grok` when no id is captured. Headless
+eject (`H`) is Claude-only; a Grok row hides and ignores it.
 
 ## State
 
 All in `~/.local/state/atc/`:
 
-| File          | Purpose                                                                                                                                                                                                           |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, the spawn-directory history for the picker, and last-used agent (written on SessionStart, advertised on `daemon.hello`). |
-| `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol.                                                              |
+| File          | Purpose                                                                                                                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `atc.db`      | SQLite: the restorable fleet (rewritten on deliberate kills only), the hook-event trail, the spawn-directory history for the picker, and last-used agent (written on a deliberate-spawn SessionStart, advertised on `daemon.hello`). |
+| `status.json` | Counts + most urgent session, read by the injected statusline on each render — a plain file because reporters read it without speaking the protocol.                                                                                 |
 
 The daemon's pid file (`atc-daemon.pid`) lives beside its sockets in `$XDG_RUNTIME_DIR`, not in the
 state directory: a pid is only meaningful for the daemon owning those sockets, and a shared location

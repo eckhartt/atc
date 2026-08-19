@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import type { AgentAdapter, AgentKind } from './agent-adapter';
 import { AttachRegistry } from './attach-registry';
 import type { Dims } from './attach-registry';
@@ -217,6 +217,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const detectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const restoreTimers = new Set<ReturnType<typeof setTimeout>>();
+  const pendingLastUsed = new Set<string>();
 
   // The screen tier of the detector stack: once a session's output has
   // quiesced, judge the serialized screen and flip running/needs_you.
@@ -458,7 +459,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
       bootWaiters.get(e.atcId)?.();
       const started = mgr.sessions.find((s) => s.id === e.atcId);
 
-      if (started !== undefined) {
+      if (started !== undefined && pendingLastUsed.delete(started.id)) {
         store.writeLastUsedAgent(started.agent);
       }
     }
@@ -476,6 +477,7 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
     spawnSession: (p) => {
       const s = mgr.spawn(p.cwd, p.name, p.prompt, p.cols, p.rows, p.resume, p.namedBy, p.agent);
 
+      pendingLastUsed.add(s.id);
       ptyDims.set(s.id, { cols: p.cols, rows: p.rows });
       screens.set(s.id, new ScreenModel(p.cols, p.rows));
       store.recordSpawnDir(p.cwd);
@@ -777,9 +779,6 @@ export function startDaemon(opts: DaemonOptions): DaemonHandle {
   return { stop: stopDaemon };
 }
 
-// Claude resume requires the transcript file on disk when one has been
-// reported. Grok resume is "the session UUID has been captured", not
-// "summary.json exists".
 function hasResumableTranscript(mgr: SessionManager, id: string): boolean {
   const s = mgr.sessions.find((x) => x.id === id);
 
@@ -787,15 +786,16 @@ function hasResumableTranscript(mgr: SessionManager, id: string): boolean {
     return false;
   }
 
-  if (s.agent === 'grok') {
-    return s.claudeId !== undefined;
+  const adapter = mgr.findAdapter(s.agent);
+
+  if (adapter === null) {
+    return false;
   }
 
-  if (s.transcriptSource === undefined) {
-    return true;
-  }
-
-  return existsSync(s.transcriptSource);
+  return adapter.canResume({
+    ...(s.claudeId === undefined ? {} : { agentSessionID: s.claudeId }),
+    ...(s.transcriptSource === undefined ? {} : { transcriptSource: s.transcriptSource }),
+  });
 }
 
 function getDescriptor(mgr: SessionManager, id: string): SessionDescriptor {

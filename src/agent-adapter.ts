@@ -56,6 +56,11 @@ interface ScreenDetector {
   readonly detectAttention: (screen: string) => AttentionJudgment | null;
 }
 
+export interface ResumeCheck {
+  readonly agentSessionID?: string;
+  readonly transcriptSource?: string;
+}
+
 /**
  * Everything specific to one agent CLI: how to spawn it, how to read its
  * hook payloads, where its session names come from, and how to resume a
@@ -73,5 +78,6 @@ export interface AgentAdapter {
     source: string,
     namedBy: 'user' | 'auto' | 'agent',
   ) => Promise<NameUpdate | null>;
+  readonly canResume: (session: ResumeCheck) => boolean;
   readonly buildResumeCommand: (cwd: string, agentSessionID: string | undefined) => string | null;
 }

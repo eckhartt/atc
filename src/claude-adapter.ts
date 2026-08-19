@@ -1,10 +1,11 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type {
   AdapterEvent,
   AgentAdapter,
   NameUpdate,
+  ResumeCheck,
   SpawnOptions,
   SpawnPlan,
 } from './agent-adapter';
@@ -162,6 +163,14 @@ export class ClaudeAdapter implements AgentAdapter {
     } catch {
       return null;
     }
+  }
+
+  canResume(session: ResumeCheck): boolean {
+    if (session.transcriptSource === undefined) {
+      return true;
+    }
+
+    return existsSync(session.transcriptSource);
   }
 
   // Shell command that re-opens this session outside atc (or anywhere).
